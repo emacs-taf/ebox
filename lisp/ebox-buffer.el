@@ -1096,10 +1096,22 @@ See `ebox-mount'."
   (apply #'ebox-mount buffer-or-name input options)
   (get-buffer buffer-or-name))
 
+(defun ebox--release-buffer-mount (buffer)
+  "Run BUFFER's unmount hooks and release its mount state.
+Return non-nil when the buffer had a mount."
+  (when ebox--buffer-mount
+    (let ((mount ebox--buffer-mount))
+      (run-hook-with-args 'ebox-unmount-functions buffer)
+      (ebox--restore-display (ebox-mount-display-saved mount))
+      (ebox--release-canvas mount)
+      (ebox--release-mount mount)
+      (setq ebox--buffer-mount nil)
+      (remove-hook 'kill-buffer-hook #'ebox--buffer-killed t)
+      t)))
+
 (defun ebox--buffer-killed ()
   "Release the mount of the buffer being killed."
-  (when ebox--buffer-mount
-    (ebox--release-mount ebox--buffer-mount)))
+  (ebox--release-buffer-mount (current-buffer)))
 
 (declare-function ebox--input-release "ebox-interaction" (session))
 
@@ -1122,13 +1134,7 @@ See `ebox-mount'."
   (let ((buffer (if buffer-or-name (get-buffer buffer-or-name) (current-buffer))))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        (when ebox--buffer-mount
-          (run-hook-with-args 'ebox-unmount-functions buffer)
-          (ebox--restore-display (ebox-mount-display-saved ebox--buffer-mount))
-          (ebox--release-canvas ebox--buffer-mount)
-          (ebox--release-mount ebox--buffer-mount)
-          (setq ebox--buffer-mount nil)
-          (remove-hook 'kill-buffer-hook #'ebox--buffer-killed t)
+        (when (ebox--release-buffer-mount buffer)
           (ebox-buffer-mode -1)
           t)))))
 

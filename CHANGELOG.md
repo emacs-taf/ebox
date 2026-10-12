@@ -82,6 +82,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Killing a mounted buffer now runs `ebox-unmount-functions` and releases the
+  canvas and mount state, like an explicit `ebox-unmount-buffer`; the hook no
+  longer stays silent on the kill path.
 - Opening a mount in a frame created by the same command no longer crashes
   Emacs: Ebox redisplays such a frame once before measuring text on it.
 - Starting native input from a button no longer immediately ends it when the

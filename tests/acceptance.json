@@ -595,6 +595,11 @@
       "purpose": "Unmount hooks run and the buffer no longer has a live mount while keeping text."
     },
     {
+      "name": "ebox-kill-buffer-runs-unmount-hook",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Killing a mounted buffer runs the unmount hooks with the buffer before it dies."
+    },
+    {
       "name": "ebox-node-mutation-errors-leave-buffer-at-last-successful-render",
       "file": "tests/ebox-update-tests.el",
       "purpose": "Rejected public mutations leave the buffer equal to the last successful render."

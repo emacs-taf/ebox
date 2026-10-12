@@ -263,6 +263,19 @@ BB "))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-kill-buffer-runs-unmount-hook ()
+  "Killing a mounted buffer runs the unmount hooks before it dies."
+  (let ((buffer (generate-new-buffer " *ebox-kill-test*")) seen)
+    (unwind-protect
+        (progn
+          (ebox-mount buffer '(box "A"))
+          (let ((ebox-unmount-functions (list (lambda (unmounted) (setq seen unmounted)))))
+            (kill-buffer buffer))
+          (should (eq seen buffer))
+          (should-not (buffer-live-p buffer)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest ebox-node-mutation-errors-leave-buffer-at-last-successful-render ()
   (ebox-test-with-mounted (buffer root '(column (box :id "a" "A") (box :id "b" "B")))
     (let ((a (car (ebox-selector-query root "#a")))
