@@ -345,6 +345,31 @@
       "purpose": "Hidden boxes suppress ink while preserving layout space in the rendered buffer."
     },
     {
+      "name": "ebox-backdrop-filter-keeps-text-and-dims-colors",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "A filtered overlay keeps covered text visible and dims its foreground and background colors."
+    },
+    {
+      "name": "ebox-backdrop-filter-keeps-image-content-visible",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "A filtered overlay keeps the image cells behind it visible instead of blanking them."
+    },
+    {
+      "name": "ebox-backdrop-filter-keeps-overlay-content-crisp",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "An overlay's own content stays crisp while only the pixels behind its blank cells are dimmed."
+    },
+    {
+      "name": "ebox-backdrop-filter-keeps-covered-cells-out-of-flow-hit",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "A filtered overlay still owns the cells it covers, so covered nodes stay out of hit bounds."
+    },
+    {
+      "name": "ebox-backdrop-filter-brightness-range-and-invalid-values",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "Brightness 1 keeps colors, higher values clamp, and unsupported filters leave covered cells untouched."
+    },
+    {
       "name": "ebox-node-constructors-build-detached-trees",
       "file": "tests/ebox-rendering-tests.el",
       "purpose": "Public node constructors, children, text predicates and copies build detached renderable trees."

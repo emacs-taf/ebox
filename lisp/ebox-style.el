@@ -27,6 +27,9 @@
     (:name :background-color :id ebox/background-color :aliases (:bgcolor)
      :initial nil :contexts (text box) :group paint :dirty-kind paint
      :signature paint :normalizer color :validator color)
+    (:name :backdrop-filter :id ebox/backdrop-filter
+     :initial nil :contexts (box row column flex grid) :group paint
+     :dirty-kind paint :signature paint :validator backdrop-filter)
     (:name :font-family :id ebox/font-family :initial nil :inherits t
      :contexts (text box) :group typography :dirty-kind geometry :signature layout
      :validator font-family)
@@ -798,6 +801,17 @@ Leave fractional and contextual lengths unresolved until used placement."
   "Return non-nil when VALUE is a canonical color fact."
   (or (null value) (stringp value) (eq value 'currentColor)))
 
+(defun ebox-style--backdrop-filter-p (value)
+  "Return non-nil when VALUE is a supported backdrop filter list.
+The supported subset is one `(brightness AMOUNT)' filter, where AMOUNT is a
+non-negative number; values below 1 dim the cells behind the overlay."
+  (or (null value)
+      (and (proper-list-p value)
+           (eq (car value) 'brightness)
+           (numberp (cadr value))
+           (>= (cadr value) 0)
+           (null (cddr value)))))
+
 (defun ebox-style--font-size-p (value)
   "Return non-nil when VALUE is a positive CSS reference-pixel size."
   (or (null value) (and (numberp value) (> value 0))))
@@ -980,6 +994,7 @@ generated wrappers that already contain exact line breaks."
     ('placement #'ebox-style--placement-p)
     ('font-family #'ebox-style--font-family-p)
     ('color #'ebox-style--color-p)
+    ('backdrop-filter #'ebox-style--backdrop-filter-p)
     ('font-size #'ebox-style--font-size-p)
     ('font-weight #'ebox-style--font-weight-p)
     ('font-style #'ebox-style--font-style-p)
@@ -1122,7 +1137,8 @@ Grid track wrappers are traversed after their structural validator succeeds."
                      (if (memq (plist-get property :name)
                                '(:wrap-mode :item-gap :cross-align
                                  :border-top-p :grid-column-span
-                                 :grid-row-span :layer :anchor :placement))
+                                 :grid-row-span :layer :anchor :placement
+                                 :backdrop-filter))
                          'ebox
                        'css)))
     (setq metadata

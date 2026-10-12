@@ -2313,11 +2313,214 @@ own backgrounds take precedence, and its shared strings are not modified."
               (push piece out))))))
     (nreverse (nconc (nreverse segment) out))))
 
+(defconst ebox--backdrop-filter-cache-limit 2048
+  "Most dimmed faces a session remembers.")
+
+(defvar ebox--backdrop-filter-faces (make-hash-table :test 'equal)
+  "Dimmed faces keyed by (FACE FILTER).")
+
+(defun ebox--backdrop-filter-default (attribute)
+  "Return the frame default color for ATTRIBUTE, or nil when unspecified.
+Batch and terminal frames report `unspecified-fg' and `unspecified-bg', so
+these pixels keep their original colors there."
+  (let ((value (face-attribute 'default attribute nil t)))
+    (and (stringp value)
+         (not (string-empty-p value))
+         (not (member value '("unspecified-fg" "unspecified-bg")))
+         value)))
+
+(defun ebox--backdrop-filter-components (color)
+  "Return COLOR's 16-bit RGB components, or nil when it has no value.
+Hex colors are parsed here instead of through `color-values', which
+approximates them to the terminal palette on a non-graphical frame."
+  (cond
+   ((and (stringp color)
+         (string-match-p "\\`#[[:xdigit:]]+\\'" color))
+    (let* ((digits (substring color 1))
+           (width (/ (length digits) 3)))
+      (when (and (memq width '(1 2 3 4))
+                 (= (* width 3) (length digits)))
+        (cl-loop for part from 0 below 3
+                 for start = (* part width)
+                 for value = (string-to-number (substring digits start (+ start width)) 16)
+                 collect (round (* value (/ 65535.0 (1- (ash 1 (* 4 width))))))))))
+   ((stringp color)
+    (let ((rgb (color-values color)))
+      (and (proper-list-p rgb) (= 3 (length rgb)) rgb)))
+   (t nil)))
+
+(defun ebox--backdrop-filter-color (color brightness)
+  "Return COLOR with each channel multiplied by BRIGHTNESS, or nil.
+An unparsable color keeps the pixel unchanged; brightness 1 keeps the
+original color string so an identity filter does not restyle a face."
+  (if (= brightness 1)
+      color
+    (when-let* ((rgb (ebox--backdrop-filter-components color)))
+      (apply #'format "#%04X%04X%04X"
+             (mapcar (lambda (value)
+                       (min 65535 (round (* value brightness))))
+                     rgb)))))
+
+(defun ebox--backdrop-filter-plist (face)
+  "Return FACE as one plist, keeping the first value of each attribute.
+FACE is nil, a face plist or a list of face plists, as Ebox composes them."
+  (cond
+   ((null face) nil)
+   ((keywordp (car-safe face)) (copy-sequence face))
+   ((consp face)
+    (let (plist)
+      (dolist (part face)
+        (when (keywordp (car-safe part))
+          (cl-loop for (key value) on part by #'cddr
+                   unless (plist-member plist key)
+                   do (setq plist (plist-put plist key value)))))
+      plist))
+   (t nil)))
+
+(defun ebox--backdrop-filter-face (face filter)
+  "Return FACE with foreground and background dimmed by FILTER.
+A face that is not an Ebox-composed plist, such as a symbol or a named face
+list, is returned unchanged.  Missing colors fall back to the frame default,
+so a face with no explicit color still dims on a graphical frame."
+  (if (not (or (null face)
+               (keywordp (car-safe face))
+               (and (consp face)
+                    (cl-every (lambda (part) (keywordp (car-safe part))) face))))
+      face
+    (let* ((brightness (cadr filter))
+           (key (list face filter))
+           (cached (gethash key ebox--backdrop-filter-faces)))
+      (or cached
+          (let* ((plist (ebox--backdrop-filter-plist face))
+                 (original-fg (plist-get plist :foreground))
+                 (original-bg (plist-get plist :background))
+                 (foreground (or original-fg
+                                 (ebox--backdrop-filter-default :foreground)))
+                 (background (or original-bg
+                                 (ebox--backdrop-filter-default :background)))
+                 (dimmed (or (and foreground
+                                  (ebox--backdrop-filter-color foreground brightness))
+                             foreground))
+                 (behind (or (and background
+                                  (ebox--backdrop-filter-color background brightness))
+                             background)))
+            (if (and (equal dimmed foreground) (equal behind background))
+                (setq plist face)
+              (when dimmed (setq plist (plist-put plist :foreground dimmed)))
+              (when behind (setq plist (plist-put plist :background behind))))
+            (when (> (hash-table-count ebox--backdrop-filter-faces)
+                     ebox--backdrop-filter-cache-limit)
+              (clrhash ebox--backdrop-filter-faces))
+            (puthash key plist ebox--backdrop-filter-faces)
+            plist)))))
+
+(defun ebox--backdrop-filter-string (string filter)
+  "Return STRING with every face run dimmed by FILTER.
+The result is a fresh copy: strings with equal characters but different
+text properties must not share each other's colors."
+  (let* ((copy (copy-sequence string))
+         (length (length copy))
+         (position 0))
+    (while (< position length)
+      (let* ((next (or (next-single-property-change position 'face string)
+                       length))
+             (face (get-text-property position 'face string))
+             (dimmed (ebox--backdrop-filter-face face filter)))
+        (when dimmed
+          (put-text-property position next 'face dimmed copy))
+        (setq position next)))
+    copy))
+
+(defun ebox--backdrop-filter-image-p (string)
+  "Return non-nil when STRING paints an image glyph.
+Image pixels are kept as they are: a text composite cannot recolor an image,
+and blanking it would hide the content the overlay must preserve."
+  (let ((display (get-text-property 0 'display string)))
+    (and display (not (eq (car-safe display) 'space)) t)))
+
+(defun ebox--backdrop-filtered-parts (parts filter)
+  "Return PARTS with text dimmed by FILTER and image pixels preserved."
+  (let (out)
+    (dolist (string parts)
+      (push (if (ebox--backdrop-filter-image-p string)
+                string
+              (ebox--backdrop-filter-string string filter))
+            out))
+    (nreverse out)))
+
+(defun ebox--backdrop-filter-blank-at-p (string position)
+  "Return non-nil when the cell at POSITION of STRING paints no content."
+  (let ((display (get-text-property position 'display string)))
+    (and (eq (aref string position) ?\s)
+         (or (null display) (eq (car-safe display) 'space)))))
+
+(defun ebox--backdrop-filter-blank-p (string)
+  "Return non-nil when STRING paints only blank cells."
+  (let ((blank t)
+        (position 0)
+        (length (length string)))
+    (while (and blank (< position length))
+      (unless (ebox--backdrop-filter-blank-at-p string position)
+        (setq blank nil))
+      (cl-incf position))
+    blank))
+
+(defun ebox--backdrop-filter-merge-part (string behind)
+  "Return STRING with blank cells replaced by dimmed BEHIND pixels.
+BEHIND is a parts list covering at least STRING's width.  Return
+(MERGED . REST): MERGED is a list of strings covering STRING's width and
+REST is the unused tail of BEHIND."
+  (cond
+   ((zerop (length string)) (cons (list string) behind))
+   ((ebox--backdrop-filter-blank-p string)
+    (let ((split (ebox--split-parts behind (ebox--part-width string))))
+      (cons (if (car split) (car split) (list string)) (cdr split))))
+   ((not (string-match-p " " string))
+    (let ((split (ebox--split-parts behind (ebox--part-width string))))
+      (cons (list string) (cdr split))))
+   (t
+    (let ((out nil)
+          (rest behind)
+          (position 0)
+          (length (length string)))
+      (while (< position length)
+        (if (ebox--backdrop-filter-blank-at-p string position)
+            (let* ((width (ebox--part-width
+                           (substring string position (1+ position))))
+                   (split (ebox--split-parts rest width)))
+              (setq rest (cdr split))
+              (dolist (piece (car split)) (push piece out))
+              (cl-incf position))
+          (let ((start position))
+            (cl-incf position)
+            (while (and (< position length)
+                        (not (ebox--backdrop-filter-blank-at-p string position)))
+              (cl-incf position))
+            (let* ((run (substring string start position))
+                   (split (ebox--split-parts rest (ebox--part-width run))))
+              (setq rest (cdr split))
+              (push run out)))))  
+      (cons (nreverse out) rest)))))
+
+(defun ebox--backdrop-filter-under (segment under filter)
+  "Return SEGMENT showing UNDER, dimmed by FILTER, through its blank cells.
+SEGMENT and UNDER cover the same pixels.  A blank cell of SEGMENT keeps the
+dimmed pixel behind it, and a cell with its own content hides it."
+  (let ((behind (ebox--backdrop-filtered-parts under filter))
+        (out nil))
+    (dolist (string segment)
+      (pcase-let ((`(,merged . ,rest)
+                   (ebox--backdrop-filter-merge-part string behind)))
+        (setq behind rest)
+        (dolist (piece merged) (push piece out))))
+    (nreverse out)))
+
 (defun ebox--splice-node (parts node x y bi bw &optional transparent)
   "Splice NODE's margin-box line at border-box line BI into PARTS.
 NODE's margin box starts at X and Y in its host's border box of BW pixels.
 TRANSPARENT non-nil keeps the backgrounds of PARTS behind NODE's pixels
-that have none."
+that have none.  A `:backdrop-filter' on NODE keeps the cells it covers and
+dims their colors instead of replacing them."
   (let ((row (- bi y)))
     (if (or (< row 0) (>= row (ebox-node-h node)) (ebox--hidden-p node))
         parts
@@ -2335,6 +2538,12 @@ that have none."
               (setq segment
                     (ebox--over-backgrounds
                      segment (car (ebox--split-parts (cdr (ebox--split-parts parts x)) w)))))
+            (when-let* ((filter (ebox--cv (ebox-node-cs node) 'ebox/backdrop-filter)))
+              (setq segment
+                    (ebox--backdrop-filter-under
+                     segment
+                     (car (ebox--split-parts (cdr (ebox--split-parts parts x)) w))
+                     filter)))
             (ebox--splice-parts parts x segment w)))))))
 
 (defun ebox--apply-overlays (host geo bi parts)
