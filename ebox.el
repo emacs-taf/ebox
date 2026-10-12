@@ -5,7 +5,7 @@
 ;; Version: 3.0.0
 ;; Package-Requires: ((emacs "29.1") (ecss "0.1.0"))
 ;; Keywords: ui, graphics, convenience
-;; URL: https://gitea.gklazycat.heiyu.space/emacs-taf/ebox
+;; URL: https://github.com/emacs-taf/ebox
 
 ;; This program is free software: you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
