@@ -904,6 +904,7 @@ every row an interactive element spans."
 (defun ebox-flush ()
   "Bring every queued mount's buffer up to date."
   (unless ebox--flushing
+    (when ebox--queue (ebox--settle-measuring-frame))
     (let ((ebox--flushing t))
       (while ebox--queue
         (let ((mount (pop ebox--queue)))
@@ -1002,6 +1003,7 @@ The viewport is `ebox-viewport-width' by `ebox-viewport-height'."
          (ebox--damage nil))
     (when (ebox-node-parent root)
       (signal 'ebox-error (list "Cannot render a non-root node")))
+    (ebox--settle-measuring-frame)
     (ebox--style-pass root nil nil)
     (ebox--layout root ebox--vw (if (eq (ebox-node-tag root) 'text) 'shrink 'stretch) ebox--vh)
     (ebox--place-anchored root (ebox--collect-anchored root))

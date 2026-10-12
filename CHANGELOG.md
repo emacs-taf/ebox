@@ -80,6 +80,8 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Opening a mount in a frame created by the same command no longer crashes
+  Emacs: Ebox redisplays such a frame once before measuring text on it.
 - Starting native input from a button no longer immediately ends it when the
   opening gesture is released outside the text field. Nested field controls
   retain editing unless their callback finishes it; later outside clicks

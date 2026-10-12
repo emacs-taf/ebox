@@ -87,6 +87,28 @@ face plists, which must not re-measure every character."
         (aset memo 2 table)
         table))))
 
+;; A frame Emacs has never redisplayed can crash the display engine when
+;; text is measured on it (a segmentation fault in `face_for_font' under
+;; `buffer-text-pixel-size'), which happens when an application opens in a
+;; frame created in the same command.  Window change functions record each
+;; window's width once redisplay has seen it, and Ebox always installs one
+;; (`ebox--window-size-change'), so a zero `window-old-pixel-width' marks a
+;; window redisplay has not reached yet.
+(defvar ebox--settled-windows (make-hash-table :test 'eq :weakness 'key)
+  "Windows already checked by `ebox--settle-measuring-frame'.")
+
+(defun ebox--settle-measuring-frame ()
+  "Redisplay once before measuring on a window redisplay has not seen.
+Each window is checked once, so iconified or hidden frames do not cost a
+redisplay per flush."
+  (let ((window (selected-window)))
+    (when (and (not noninteractive)
+               (display-graphic-p)
+               (not (gethash window ebox--settled-windows)))
+      (puthash window t ebox--settled-windows)
+      (when (zerop (window-old-pixel-width window))
+        (redisplay t)))))
+
 (defun ebox--measure-raw (string)
   "Measure STRING with `string-pixel-width' in the measuring buffer."
   (if (and ebox--measure-buffer (buffer-live-p ebox--measure-buffer))
