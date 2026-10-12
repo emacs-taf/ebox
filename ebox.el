@@ -20,7 +20,7 @@
 ;; only the changed lines.  Updates outside `ebox-with-batch' flush at once.
 ;;
 ;; This Commentary is the supported API inventory; unlisted symbols are
-;; internal.  Workflows are in docs/manual.md.
+;; internal.  Workflows are in the ETAF Reference Manual.
 ;;
 ;;;; Building trees
 ;;

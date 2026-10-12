@@ -45,7 +45,7 @@ Ebox 没有原生模块。可用时，图片准备也可以使用 Emacs 图形�
 代替字节码，无需额外配置。之后修改过的源文件在下次 `make native` 前以字节码运行。
 
 checkout 用户只 require `ebox`；`lisp/` 下的实现文件是私有的。权威 API 清单在
-[`ebox.el`](ebox.el) 的 Commentary 中，工作流见[手册](docs/manual.zh-CN.md)。
+[`ebox.el`](ebox.el) 的 Commentary 中，工作流见 [ETAF 参考手册](https://gitea.gklazycat.heiyu.space/emacs-taf/etaf-manual/src/branch/main/book/zh-CN/ebox-node-construction.md)。
 
 ## 最小可运行示例
 
@@ -73,7 +73,7 @@ checkout 用户只 require `ebox`；`lisp/` 下的实现文件是私有的。权
 
 ## 文档
 
-- [手册](docs/manual.zh-CN.md)：用户工作流和示例。
+- [参考手册](https://gitea.gklazycat.heiyu.space/emacs-taf/etaf-manual/src/branch/main/book/zh-CN/ebox-node-construction.md)：ETAF 参考手册的 Ebox 章节。
 - [架构](docs/architecture.zh-CN.md)：维护者使用的实现模块、数据流和不变式。
 - [`ebox.el` Commentary](ebox.el)：完整受支持 API 清单。
 - [变更日志](CHANGELOG.zh-CN.md)：用户可见变化和迁移说明。

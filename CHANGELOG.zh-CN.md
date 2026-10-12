@@ -52,6 +52,8 @@ Ebox 的重要变化记录在这里。
 
 ### 删除
 
+- 包内手册 `docs/manual.md` 由 [ETAF 参考手册](https://gitea.gklazycat.heiyu.space/emacs-taf/etaf-manual/src/branch/main/book/zh-CN/ebox-node-construction.md) 取代，README 与包入口 Commentary 改为链接手册；`docs/architecture.md` 仍是维护者契约。
+
 - **BREAKING：** 删除上一代 engine 的 canonical inputs、source builders、surfaces、
   publications、transactions、prepared update/geometry API、generation/candidate 模型、
   layer module、native Rust layout module、framework SPI 与 render-burst 接口。迁移高层调用方时，

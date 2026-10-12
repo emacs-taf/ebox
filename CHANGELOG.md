@@ -66,6 +66,8 @@ All notable changes to Ebox are documented here.
 
 ### Removed
 
+- The package manual `docs/manual.md` is replaced by the [ETAF Reference Manual](https://gitea.gklazycat.heiyu.space/emacs-taf/etaf-manual/src/branch/main/book/en/ebox-node-construction.md), which the README and the package Commentary link; `docs/architecture.md` remains the maintainer contract.
+
 - **BREAKING:** Removed the previous engine's canonical inputs, source builders,
   surfaces, publications, transactions, prepared update/geometry APIs,
   generation/candidate model, layer module, native Rust layout module, framework

@@ -60,7 +60,7 @@ until the next `make native`.
 
 Checkout users require only `ebox`; implementation files under `lisp/` are
 private.  The authoritative API inventory is the Commentary in
-[`ebox.el`](ebox.el), and workflows are in the [manual](docs/manual.md).
+[`ebox.el`](ebox.el), and workflows are in the [ETAF Reference Manual](https://gitea.gklazycat.heiyu.space/emacs-taf/etaf-manual/src/branch/main/book/en/ebox-node-construction.md).
 
 ## Minimal working example
 
@@ -90,7 +90,7 @@ same tree and flush the affected buffer lines.
 
 ## Documentation
 
-- [Manual](docs/manual.md): user workflows and examples.
+- [Reference manual](https://gitea.gklazycat.heiyu.space/emacs-taf/etaf-manual/src/branch/main/book/en/ebox-node-construction.md): the Ebox chapters of the ETAF Reference Manual.
 - [Architecture](docs/architecture.md): implemented modules, data flow and
   invariants for maintainers.
 - [`ebox.el` Commentary](ebox.el): complete supported API inventory.
