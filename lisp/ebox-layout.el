@@ -1976,10 +1976,10 @@ line's top when the shape does not simply fill the line."
   (let ((cs (ebox-node-cs node)))
     (when (and (ebox-cs-padface cs) (not noninteractive) (display-graphic-p))
       (let* ((radius (min (or (ebox--px (ebox--cv cs 'ebox/border-radius) cs nil) 0)
-                          (frame-char-height)))
+                          (ebox--line-px)))
              (it (ebox--pad-inset (ebox-cs-pt cs) (ebox-geo-pt geo)))
              (ib (ebox--pad-inset (ebox-cs-pb cs) (ebox-geo-pb geo)))
-             (lh (frame-char-height))
+             (lh (ebox--line-px))
              (top (- it (* bi lh)))
              (bottom (- (* (ebox-geo-bh geo) lh) ib (* bi lh))))
         (when (and (or (> radius 1) (> it 0) (> ib 0))
@@ -1996,7 +1996,7 @@ line's top when the shape does not simply fill the line."
 LEFT selects the left side, whose outer end comes first."
   (pcase-let* ((`(,top ,bottom ,radius ,inside ,outside) shape)
                (r (min radius width)))
-    (if (or (< r 2) (and (<= top (- radius)) (>= bottom (+ (frame-char-height) radius))))
+    (if (or (< r 2) (and (<= top (- radius)) (>= bottom (+ (ebox--line-px) radius))))
         (list (ebox--space width padface))
       (let ((corner (if left
                         (ebox--shape-image r 0 (* 4 radius) top bottom radius inside outside)
@@ -2022,7 +2022,7 @@ is then joined into one string."
            (lshape (and (not (ebox-cs-blc cs)) shape))
            (rshape (and (not (ebox-cs-brc cs)) shape))
            (inner (- (ebox-geo-bw geo) (ebox-geo-bl geo) (ebox-geo-br geo)))
-           (lh (frame-char-height)))
+           (lh (ebox--line-px)))
       (setq parts
             (cond
              ((and shape (or (>= (car shape) lh) (<= (cadr shape) 0)))

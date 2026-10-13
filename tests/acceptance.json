@@ -633,6 +633,26 @@
       "name": "ebox-file-load-companion-prefers-only-newer-bytecode",
       "file": "tests/ebox-image-file-tests.el",
       "purpose": "A .ebox companion loads its source unless its bytecode is newer."
+    },
+    {
+      "name": "ebox-text-scale-change-relayouts-its-mount-once",
+      "file": "tests/ebox-text-scale-tests.el",
+      "purpose": "A burst of scale steps settles into one whole relayout of the scaled mount."
+    },
+    {
+      "name": "ebox-text-scale-change-refreshes-only-the-scaled-mount",
+      "file": "tests/ebox-text-scale-tests.el",
+      "purpose": "Scaling one mounted buffer leaves another mount's output untouched."
+    },
+    {
+      "name": "ebox-text-scale-change-skips-buffers-without-a-live-mount",
+      "file": "tests/ebox-text-scale-tests.el",
+      "purpose": "A scale change is an intent only while a live mount owns the buffer."
+    },
+    {
+      "name": "ebox-display-metrics-are-owned-and-match-native-measurement",
+      "file": "tests/ebox-text-scale-tests.el",
+      "purpose": "Effective default-face metrics match native measurement across scaling and callers own their result."
     }
   ]
 }

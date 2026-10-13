@@ -4,7 +4,9 @@
 ;; Emacs owns window events; Ebox owns the mounted viewport.  This module is
 ;; the single bridge between them.  Size and buffer-change hooks record frame
 ;; intents; one task samples current visible dimensions and refits mounts after
-;; the drag settles.
+;; the drag settles.  A text scale change is a viewport intent too: it changes
+;; every measured glyph, so one task refreshes the glyph caches and lays the
+;; scaled mounts out again after the scale settles.
 
 ;;; Code:
 
@@ -82,12 +84,19 @@ mounted viewport keeps its committed size until that UI releases them."
              (eq (window-frame minibuffer) frame)))
       (and (current-message) t)))
 
+(defvar ebox--text-scale-pending nil
+  "Buffers awaiting metric refresh in the shared viewport task.")
+
 (defun ebox--window-size-change-schedule ()
-  "Schedule one task for live pending frames outside the current batch."
+  "Schedule one task for live viewport intents outside the current batch."
   (setq ebox--window-size-change-pending-frames
         (cl-delete-if-not #'frame-live-p
-                          ebox--window-size-change-pending-frames))
-  (when (and ebox--window-size-change-pending-frames
+                          ebox--window-size-change-pending-frames)
+        ebox--text-scale-pending
+        (cl-delete-if-not (lambda (buffer)
+                            (and (buffer-live-p buffer) (ebox-buffer-mount buffer)))
+                          ebox--text-scale-pending))
+  (when (and (or ebox--window-size-change-pending-frames ebox--text-scale-pending)
              (not ebox--window-size-change-in-progress))
     (when ebox--window-size-change-timer
       (cancel-timer ebox--window-size-change-timer))
@@ -100,21 +109,33 @@ mounted viewport keeps its committed size until that UI releases them."
   (unless ebox--window-size-change-in-progress
     (let ((ebox--window-size-change-in-progress t)
           (frames (nreverse ebox--window-size-change-pending-frames))
+          (buffers (nreverse ebox--text-scale-pending))
           first-error)
       (unwind-protect
           (progn
             (setq ebox--window-size-change-pending-frames nil
+                  ebox--text-scale-pending nil
                   ebox--window-size-change-timer nil)
+            (when buffers (ebox-clear-cache))
             ;; Timer dispatch inhibits quit by default.  Enable C-g only after
             ;; cleanup is installed.
+            (let ((inhibit-quit nil))
+              (while buffers
+                (let ((buffer (pop buffers)))
+                  (when (buffer-live-p buffer)
+                    (condition-case failure
+                        (ebox--refresh-metrics buffer)
+                      (error (unless first-error (setq first-error failure))))))))
             (let ((inhibit-quit nil))
               (while frames
                 (let ((frame (pop frames)))
                   (condition-case failure
                       (ebox--window-size-change-sync-frame frame)
                     (error (unless first-error (setq first-error failure))))))))
-        ;; A quit may leave unstarted frames.  Keep those intents, but do not
-        ;; retry the frame whose refit already started and failed.
+        ;; Keep unstarted work after a quit, but do not retry failed work.
+        (dolist (buffer buffers)
+          (unless (memq buffer ebox--text-scale-pending)
+            (push buffer ebox--text-scale-pending)))
         (dolist (frame frames)
           (unless (memq frame ebox--window-size-change-pending-frames)
             (push frame ebox--window-size-change-pending-frames)))
@@ -147,6 +168,20 @@ still in progress, so the following settle re-reads the stable geometry."
 
 (when (boundp 'minibuffer-exit-hook)
   (add-hook 'minibuffer-exit-hook #'ebox--window-size-change-minibuffer-exit))
+
+;;;; Text scale
+
+(defun ebox--text-scale-change ()
+  "Record the current buffer's text scale change as a viewport intent."
+  (when (ebox-buffer-mount (current-buffer))
+    (unless (memq (current-buffer) ebox--text-scale-pending)
+      (push (current-buffer) ebox--text-scale-pending))
+    (ebox--window-size-change-schedule)))
+
+;; Text scaling is buffer-local and changes the metrics the mount measured
+;; with, so a scaled mounted buffer is a viewport intent.  The hook fires on
+;; every step, including the step back to the unscaled size.
+(add-hook 'text-scale-mode-hook #'ebox--text-scale-change)
 
 (provide 'ebox-viewport)
 

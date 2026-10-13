@@ -84,7 +84,10 @@ root's color keeps them the same as the application surface."
         (face-remap-remove-relative cookie))
       (setf (ebox-mount-canvas mount) bg
             (ebox-mount-canvas-cookie mount)
-            (and bg (face-remap-add-relative 'default :background bg))))))
+            (and bg (face-remap-add-relative 'default :background bg)))
+      ;; Record Ebox's paint-only remap at its mutation boundary, not on the
+      ;; next unrelated measurement or input event.
+      (ebox--remap-key))))
 
 (defun ebox--release-canvas (mount)
   "Remove the background remapping of MOUNT's buffer."
@@ -163,6 +166,37 @@ its dirty children."
   (push op (ebox-node-ops parent))
   (setf (ebox-node-intr parent) nil)
   (ebox--mark parent ebox--d-desc))
+
+(defun ebox--mark-metrics-stale (node)
+  "Mark NODE and every descendant stale in style, layout and paint.
+A glyph metric change invalidates intrinsic sizes before any parent asks
+for a child's contribution, not just when the child is laid out."
+  (setf (ebox-node-intr node) nil
+        (ebox-node-dirty node) (logior (ebox-node-dirty node) 15))
+  (ebox--do-kids (kid node)
+    (ebox--mark-metrics-stale kid)))
+
+(defun ebox--refresh-metrics (&optional buffer-or-name)
+  "Lay BUFFER-OR-NAME's mounted tree out again after a glyph metric change.
+The caller clears the glyph caches.  Preserve the retained tree and state,
+re-measure its viewport, then publish the settled display to subscribers."
+  (when-let* ((mount (ebox-buffer-mount buffer-or-name)))
+    (with-current-buffer (ebox-mount-buffer mount)
+      (let* ((root (ebox-mount-root mount))
+             (before (cons (ebox-mount-vw mount) (ebox-mount-vh mount)))
+             (viewport (ebox--measure-viewport mount)))
+        (setf (ebox-mount-vw mount) (car viewport)
+              (ebox-mount-vh mount) (cdr viewport))
+        (ebox--mark-metrics-stale root)
+        (ebox--enqueue root)
+        (ebox--settle)
+        (run-hook-with-args 'ebox-display-change-functions (current-buffer))
+        (unless (equal before viewport)
+          (run-hook-with-args 'ebox-viewport-change-functions (current-buffer)))))))
+
+(defvar ebox-display-change-functions nil
+  "Abnormal hook run with a mounted buffer after its display metrics settle.
+Read `ebox-display-metrics' in the callback.  Retained state is not remounted.")
 
 (defmacro ebox-with-batch (&rest body)
   "Run BODY as one update batch; flush queued mounts when it ends."
@@ -917,6 +951,10 @@ every row an interactive element spans."
   "Restyle, relayout and repaint MOUNT's dirty subtree."
   (let* ((root (ebox-mount-root mount))
          (ebox--current-mount mount)
+         ;; Glyphs are measured under the mounting buffer's faces, so its
+         ;; text scale and remappings select the sizes being laid out.
+         (ebox--measure-buffer (ebox-mount-buffer mount))
+         (ebox--active-metrics (ebox--display-metrics ebox--measure-buffer))
          (ebox--vw (ebox-mount-vw mount))
          (ebox--vh (ebox-mount-vh mount))
          (ebox--damage (ebox-mount-report mount))
@@ -995,10 +1033,13 @@ observation."
 
 (defun ebox-render (input)
   "Render INPUT, a node or author form, and return its lines as a string.
-The viewport is `ebox-viewport-width' by `ebox-viewport-height'."
+The viewport is `ebox-viewport-width' by `ebox-viewport-height'.  Glyphs
+are measured under the current buffer's faces, so its text scale applies."
   (let* ((root (ebox--input-root input))
          (ebox--vw (ebox--default-viewport-width))
          (ebox--vh (ebox--default-viewport-height))
+         (ebox--measure-buffer (current-buffer))
+         (ebox--active-metrics (ebox--display-metrics ebox--measure-buffer))
          (ebox--record nil)
          (ebox--damage nil))
     (when (ebox-node-parent root)
@@ -1051,7 +1092,9 @@ Non-nil WIDTH or HEIGHT fixes that dimension, as for a fixed mount."
               (ebox--default-viewport-width))
           (or height
               ebox-viewport-height
-              (and window (window-body-height window))
+              (and window
+                   (floor (window-body-height window t)
+                          (plist-get (ebox--display-metrics buffer-or-name) :line-height)))
               (ebox--default-viewport-height)))))
 
 (defun ebox--measure-viewport (mount)

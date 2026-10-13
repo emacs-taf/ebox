@@ -87,6 +87,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Buffer text scaling keeps a mounted tree aligned: a scale change clears the
+  shared glyph caches once the zoom settles and lays the whole mount out
+  again, so wheel zooming a mounted application no longer paints rows cut to
+  the metrics of the previous scale.
 - Killing a mounted buffer now runs `ebox-unmount-functions` and releases the
   canvas and mount state, like an explicit `ebox-unmount-buffer`; the hook no
   longer stays silent on the kill path.

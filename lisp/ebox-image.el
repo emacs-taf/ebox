@@ -111,21 +111,16 @@ Call after installing converters or changing their configuration."
    (t (error "Ebox image source must be a file or image descriptor"))))
 
 (defun ebox-image--metrics (frame)
-  "Return FRAME's (CELL-WIDTH LINE-HEIGHT ASCENT-PERCENT), or nil.
-Use the default font's actual ascent, never a minimum pixel height."
+  "Return (CELL-WIDTH LINE-HEIGHT ASCENT-PERCENT) for the measuring context.
+Use the buffer's effective default face on graphical FRAME, or return nil."
   (when (display-graphic-p frame)
-    (let* ((info (ignore-errors (font-info (face-font 'default frame) frame)))
-           (width (frame-char-width frame))
-           (height (frame-char-height frame))
-           (ascent (and info (> (length info) 9) (aref info 8))))
-      (when (and (integerp width) (> width 0)
-                 (integerp height) (> height 0)
-                 (integerp ascent) (<= 0 ascent height))
-        ;; Redisplay truncates HEIGHT * PERCENT / 100.  Rounding the
-        ;; percentage down adds a descent pixel and expands every row.
-        (let ((percent (ceiling (* 100 ascent) height)))
-          (when (= (floor (* height percent) 100) ascent)
-            (list width height percent)))))))
+    (let* ((ebox--measure-frame (or frame (selected-frame)))
+           (metrics (or (and (eq ebox--measure-frame (selected-frame))
+                             ebox--active-metrics)
+                        (ebox--display-metrics ebox--measure-buffer))))
+      (list (plist-get metrics :char-width)
+            (plist-get metrics :line-height)
+            (plist-get metrics :ascent)))))
 
 (defun ebox-image--bytes (source)
   "Read SOURCE bytes during preparation, never during rendering."

@@ -35,7 +35,7 @@ Implementation modules are organized by responsibility:
 Low-level pure modules do not know about mounts.  Nodes depend on size, style
 and measurement.  Layout depends on retained nodes and calls flex/grid through
 private functions.  Buffer flushing depends on node and layout.  Interaction is
-layered above mounted buffers.  Viewport delivery only requests `ebox-refit`.
+layered above mounted buffers.  Viewport delivery refits size changes and refreshes metric changes without remounting.
 Images are prepared outside layout and become node content.
 
 ## Core records
@@ -252,6 +252,19 @@ A mount records one viewport.  `ebox-viewport.el` watches frame/window-size
 notifications, waits for a quiet interval and calls `ebox-refit` for displayed
 mounts.  Temporary minibuffer, completion or echo-area height changes do not
 force a smaller viewport unless the frame itself changed.
+
+Buffer text scaling is another viewport intent.  It changes the metrics every
+measured glyph used without producing a window-size notification, so the
+bridge records scaled mounted buffers from `text-scale-mode-hook`, clears the
+shared glyph caches once the scale goes quiet and lays the whole tree out
+again.  Flush measurement binds `ebox--measure-buffer` to the mounting buffer,
+so glyph widths, raw sizes and line heights all read that buffer's faces.
+Remapping keys are immutable snapshots because Emacs mutates the live alist;
+computed styles share the contextual glyph cache rather than caching their
+own character width across buffers.  Both event kinds use the same trailing
+task and preserve unstarted work on quit.  After refresh,
+`ebox-display-change-functions` publishes the effective metrics; external
+image producers use `ebox-display-metrics` to repartition fixed pixel content.
 
 Scroll offsets live on nodes.  A scroll mutation changes visible content lines,
 not layout constraints, so a clean scrollable node can enqueue direct line

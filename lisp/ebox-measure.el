@@ -15,8 +15,8 @@
 (defvar ebox--measure-buffer nil
   "Buffer whose face remapping applies to measurements, or nil.")
 
-(defvar ebox--width-tables (make-hash-table :test 'eq :weakness 'key)
-  "Map of remapping identity to per-face width tables.")
+(defvar ebox--width-tables (make-hash-table :test 'equal :weakness 'key)
+  "Map of immutable metric remappings to per-face width tables.")
 
 (defvar ebox--default-width-table (make-hash-table :test 'equal)
   "Per-face width tables without buffer face remapping.")
@@ -27,10 +27,84 @@
 (defvar ebox--width-epoch 0
   "Counter incremented whenever measurement caches are cleared.")
 
+(defvar-local ebox--remap-snapshot nil
+  "Immutable snapshot of this buffer's measurement remapping.")
+
+(defvar-local ebox--remap-metrics-key nil
+  "Metric-only projection of `ebox--remap-snapshot'.")
+
 (defun ebox--remap-key ()
-  "Return the remapping identity of the measuring buffer, or nil."
-  (and ebox--measure-buffer (buffer-live-p ebox--measure-buffer)
-       (buffer-local-value 'face-remapping-alist ebox--measure-buffer)))
+  "Return an immutable metric remapping key for the measuring buffer.
+Emacs mutates remapping entries in place.  Snapshot only on change and
+ignore paint-only remaps so independent backgrounds share glyph metrics."
+  (with-current-buffer (or ebox--measure-buffer (current-buffer))
+    (unless (equal ebox--remap-snapshot face-remapping-alist)
+      (setq ebox--remap-snapshot (copy-tree face-remapping-alist)
+            ebox--remap-metrics-key
+            (delq nil
+                  (mapcar (lambda (entry)
+                            (let ((metric (ebox--width-face (cdr entry))))
+                              (unless (equal metric (car entry))
+                                (cons (car entry) metric))))
+                          ebox--remap-snapshot))))
+    ebox--remap-metrics-key))
+
+(defvar-local ebox--display-metrics-cache nil
+  "Last font context and effective default-face metrics for this buffer.")
+
+(defvar ebox--active-metrics nil
+  "Effective default-face metrics bound for one layout pass.")
+
+(defvar ebox--measure-frame nil
+  "Explicit frame for an image preparation, or nil for the buffer's display.")
+
+(defun ebox-display-metrics (&optional buffer-or-name)
+  "Return BUFFER-OR-NAME's effective default-face metrics as a fresh plist.
+Default to the current buffer.  :char-width and :line-height are positive
+pixel sizes; :ascent is the image ascent percentage matching the baseline.
+Honor buffer-local text scaling on its displaying frame, or the selected
+frame when hidden.  Text displays return unit cells and 100 percent ascent.
+An unknown buffer signals `error'."
+  (copy-sequence (ebox--display-metrics buffer-or-name)))
+
+(defun ebox--display-metrics (&optional buffer-or-name)
+  "Read BUFFER-OR-NAME's cached metrics without allocating on a cache hit.
+The returned plist belongs to the measuring layer and must not be changed."
+  (with-current-buffer (or buffer-or-name (current-buffer))
+    (let* ((ebox--measure-buffer (current-buffer))
+           (window (if ebox--measure-frame (frame-selected-window ebox--measure-frame)
+                     (or (get-buffer-window (current-buffer) t) (selected-window))))
+           (frame (window-frame window))
+           ;; Text displays have unit cells, not a font whose metrics need
+           ;; probing.  Avoid allocating the terminal face description.
+           (font (and (window-system frame) (frame-parameter frame 'font)))
+           (height (and (window-system frame) (face-attribute 'default :height frame)))
+           (remap (ebox--remap-key))
+           (key (car ebox--display-metrics-cache)))
+      (unless (and (eq frame (nth 0 key))
+                   (eql ebox--width-epoch (nth 1 key))
+                   (equal font (nth 2 key))
+                   (eql height (nth 3 key))
+                   (equal remap (nth 4 key)))
+        (setq ebox--display-metrics-cache
+              (cons (list frame ebox--width-epoch font height remap)
+                    (if (not (window-system frame))
+                        '(:char-width 1 :line-height 1 :ascent 100)
+                      (let ((face (or (cdr (assq 'default face-remapping-alist))
+                                      'default))
+                            (buffer (current-buffer)))
+                        (with-selected-window window
+                          (let* ((info (with-temp-buffer
+                                         ;; A string probe inherits the window's
+                                         ;; base font.  Apply the remap exactly once.
+                                         (font-info (font-at 0 nil
+                                                     (propertize "0" 'face face)) frame)))
+                                 (height (max 1 (aref info 3)))
+                                 (ascent (aref info 8)))
+                            (list :char-width (max 1 (string-pixel-width "0" buffer))
+                                  :line-height height
+                                  :ascent (min 100 (max 1 (ceiling (* 100.0 ascent) height)))))))))))
+      (cdr ebox--display-metrics-cache))))
 
 (defconst ebox--paint-only-attributes
   '(:foreground :background :distant-foreground :underline :overline
@@ -111,9 +185,7 @@ redisplay per flush."
 
 (defun ebox--measure-raw (string)
   "Measure STRING with `string-pixel-width' in the measuring buffer."
-  (if (and ebox--measure-buffer (buffer-live-p ebox--measure-buffer))
-      (string-pixel-width string ebox--measure-buffer)
-    (string-pixel-width string)))
+  (string-pixel-width string (or ebox--measure-buffer (current-buffer))))
 
 (defun ebox--char-width (char face)
   "Return the pixel width of CHAR displayed with FACE."
@@ -327,9 +399,8 @@ A glyph that no scale fits takes the last.")
 
 (defun ebox--measure-raw-size (string)
   "Return STRING's (WIDTH . HEIGHT) in pixels in the measuring context."
-  (let ((remap (and ebox--measure-buffer (buffer-live-p ebox--measure-buffer)
-                    (buffer-local-value 'face-remapping-alist
-                                        ebox--measure-buffer))))
+  (let ((remap (buffer-local-value 'face-remapping-alist
+                                   (or ebox--measure-buffer (current-buffer)))))
     (with-temp-buffer
       (setq-local face-remapping-alist remap
                   line-spacing nil)
@@ -341,7 +412,8 @@ A glyph that no scale fits takes the last.")
   (let ((hash (cdr (ebox--face-table face))))
     (or (gethash 'line-height hash)
         (puthash 'line-height
-                 (max (frame-char-height)
+                 (max (plist-get (or ebox--active-metrics
+                                    (ebox--display-metrics ebox--measure-buffer)) :line-height)
                       (cdr (ebox--measure-raw-size
                             (if face (propertize "0" 'face face) "0"))))
                  hash))))

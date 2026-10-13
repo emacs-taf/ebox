@@ -588,7 +588,7 @@ also serves ids that are not valid `#' selector identifiers."
 
 (ebox--defstruct (ebox-cs (:constructor ebox-cs--make) (:copier nil))
   "Hash-consed computed style of one node."
-  vals ikey tag hidden bg face padface fontface ch deco
+  vals ikey tag hidden bg face padface fontface deco
   width min-width max-width height min-height max-height
   pt pr pb pl mt mr mb ml bl br btop bbot btc bbc blc brc
   box-sizing position outer overflow wrap align gap cross
@@ -981,13 +981,15 @@ measure text alike."
     cs))
 
 (defun ebox--ch (cs)
-  "Return the pixel width of one ch in CS's font."
-  (or (ebox-cs-ch cs)
-      (setf (ebox-cs-ch cs) (ebox--char-width ?0 (ebox-cs-fontface cs)))))
+  "Return the pixel width of one ch in CS's measuring context.
+Computed styles are shared between buffers; only the contextual glyph cache
+may retain this value."
+  (ebox--char-width ?0 (ebox-cs-fontface cs)))
 
 (defun ebox--line-px ()
-  "Return the pixel height of one line."
-  (if noninteractive 1 (max 1 (frame-char-height))))
+  "Return the effective pixel height of one layout line."
+  (plist-get (or ebox--active-metrics
+                 (ebox--display-metrics ebox--measure-buffer)) :line-height))
 
 (defun ebox--px (value cs base)
   "Resolve inline-axis VALUE in pixels for CS against percent BASE.
@@ -1042,7 +1044,7 @@ Return nil for keywords and unresolvable percentages."
                        value (list :viewport-height ebox--vh
                                    :viewport-width ebox--vw :lh 1 :ch 1))))))
     (if (and (numberp exact) (< exact lines))
-        (let ((lh (frame-char-height)))
+        (let ((lh (ebox--line-px)))
           (- (* lines lh) (round (* exact lh))))
       0)))
 

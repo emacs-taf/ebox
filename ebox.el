@@ -48,6 +48,22 @@
 ;;;###autoload (autoload 'ebox-keymap-create "ebox" nil nil)
 ;; Create a native keymap from OPTIONS.
 ;;
+;; Function: ebox-display-metrics (&optional buffer-or-name)
+;;;###autoload (autoload 'ebox-display-metrics "ebox" nil nil)
+;; Return a fresh plist describing BUFFER-OR-NAME's effective default face.
+;; Default to the current buffer.  :char-width and :line-height are positive
+;; pixel sizes; :ascent is the percentage aligning images to its baseline.
+;; Buffer-local text scaling is included.  Use its displaying frame, or the
+;; selected frame for hidden buffers.  Text displays use unit cells and 100
+;; percent ascent.  An unknown buffer signals `error'.  Image producers use
+;; these metrics to partition pixel content into aligned text rows.
+;;
+;; Hook: ebox-display-change-functions
+;; Abnormal hook called with a mounted buffer after its display metrics have
+;; settled and its retained tree has been remeasured.  Read
+;; `ebox-display-metrics' in the callback to update externally prepared rows.
+;; Scaling does not remount state or fire callbacks for released mounts.
+;;
 ;; Function: ebox-pixel-space (pixel-width)
 ;;;###autoload (autoload 'ebox-pixel-space "ebox" nil nil)
 ;; Return a display space PIXEL-WIDTH pixels wide.
@@ -67,6 +83,7 @@
 ;; Function: ebox-render (input)
 ;;;###autoload (autoload 'ebox-render "ebox" nil nil)
 ;; Render INPUT, a node or author form, and return its lines as a string.
+;; Measure under the current buffer's faces, including text scaling.
 ;;
 ;; Function: ebox-render-to-buffer (buffer-or-name input &rest options)
 ;;;###autoload (autoload 'ebox-render-to-buffer "ebox" nil nil)
@@ -133,7 +150,8 @@
 ;; Viewport height in lines for rendering outside a mount, or nil.
 ;;
 ;; Variable: ebox-viewport-settle-delay
-;; Seconds of quiet after the last size change before Ebox reflows.
+;; Seconds of quiet after the last window size or text scale change before
+;; Ebox reflows; successive events share one trailing refresh.
 ;;
 ;; Hook: ebox-unmount-functions
 ;; Abnormal hook run with a buffer whose mount is being released.

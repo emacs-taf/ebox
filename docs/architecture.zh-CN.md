@@ -30,7 +30,7 @@ Public 合同是 [`../ebox.el`](../ebox.el) 的 Commentary。`lisp/` 下的文�
 
 底层纯模块不知道 mount。node 依赖 size、style 与 measurement。layout 依赖 retained node，并通过
 private function 调用 flex/grid。buffer flushing 依赖 node 与 layout。interaction 位于 mounted buffer 之上。
-viewport delivery 只请求 `ebox-refit`。图片在 layout 之外准备，随后成为节点内容。
+viewport delivery 对尺寸变化 refit，对度量变化刷新，均不重建挂载。图片在 layout 之外准备，随后成为节点内容。
 
 ## 核心 record
 
@@ -187,6 +187,14 @@ mount 尚无任何行时跳过位置跟踪，因此首次写入空 buffer 的内
 
 mount 记录一个 viewport。`ebox-viewport.el` 监听 frame/window-size notification，等待安静间隔，然后对已显示 mount 调用
 `ebox-refit`。临时 minibuffer、completion 或 echo-area 高度变化不会强制更小 viewport，除非 frame 自身改变。
+
+Buffer 文本缩放是另一种 viewport intent。它改变每个已测量字形所用的度量，却不产生 window-size notification；
+桥接层从 `text-scale-mode-hook` 记录被缩放的 mounted buffer，等缩放稳定后清空一次共享字形缓存并整棵重新布局。
+flush 期间测量把 `ebox--measure-buffer` 绑定到挂载缓冲区，字形宽度、原始尺寸与行高因而都读该缓冲区自己的 face。
+Emacs 会就地修改 remapping alist，缓存键因此使用不可变快照；computed style 复用上下文字形缓存，
+不再自行跨缓冲区缓存字符宽度。两类事件共享尾部任务，中断时保留未开始的工作。
+刷新后 `ebox-display-change-functions` 发布有效度量，外部图像提供者读取 `ebox-display-metrics`
+重新切分固定像素内容。
 
 scroll offset 存在 node 上。scroll mutation 改变可见 content lines，而非 layout constraints，因此 clean scrollable node
 可直接为自身 visible height 入队 line damage。
