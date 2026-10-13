@@ -209,6 +209,13 @@ authored properties immediately clears that cache, including for hidden nodes
 that will not compose another line. No global cache owns callback-bearing
 interaction plists after their node or authored capabilities are retired.
 
+Native mouse-face runs stop at intervening content. Pointer motion therefore
+also paints transient face overlays on all matching spans within the hovered
+node's bounds, so side-by-side multirow elements highlight as whole regions
+without coloring their neighbours. Motion within the same target does no work;
+a publication refreshes that target's spans without rebuilding layout or text.
+Leaving the buffer, disabling buffer mode or killing it releases the paint.
+
 Overlays splice into the lines they cover without concatenating them.
 `ebox--split-parts` cuts the underlying parts at the overlay's pixel columns;
 a string that straddles a cut becomes sized substrings plus edge spaces that

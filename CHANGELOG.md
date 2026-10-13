@@ -87,6 +87,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Pointer hover now highlights every painted row of side-by-side multirow
+  elements, without filling intervening gaps or adjacent elements.
+
 - Buffer text scaling keeps a mounted tree aligned: a scale change clears the
   shared glyph caches once the zoom settles and lays the whole mount out
   again, so wheel zooming a mounted application no longer paints rows cut to

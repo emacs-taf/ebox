@@ -8,7 +8,7 @@
          (rendered (ebox-render (list 'box :keymap map "Go"))))
     (should (keymapp (get-text-property 0 'keymap rendered)))
     (should (commandp (lookup-key (get-text-property 0 'keymap rendered) (kbd "RET"))))
-    (ebox-test-with-mounted (buffer root (list 'box :keymap map "Go"))
+    (ebox-test-with-mounted (buffer _root (list 'box :keymap map "Go"))
       (goto-char (point-min))
       (ebox-activate)
       (should (= hits 1)))))
@@ -482,6 +482,40 @@
         (forward-line 1)
         (should-not (get-text-property (1- (point)) 'mouse-face))))))
 
+(ert-deftest ebox-hover-highlights-disjoint-rows-without-painting-neighbours ()
+  "A pointer over one card paints all its rows, not adjacent cards or gaps."
+  (ebox-test-with-mounted
+      (buffer root '(row :item-gap (ch 2)
+                         (box :id "card" :width (ch 7)
+                              :hover-style (:background-color "#123456")
+                              (column "A" "B" "C"))
+                         (box :id "neighbour" :width (ch 7)
+                              (column "X" "Y" "Z"))))
+    (save-window-excursion
+      (switch-to-buffer buffer)
+      (let* ((card (car (ebox-selector-query root "#card")))
+             (start (ebox-node-position card))
+             (command (key-binding [mouse-movement]))
+             (before (buffer-substring-no-properties (point-min) (point-max))))
+        (should (commandp command))
+        (funcall command (list 'mouse-movement (list (selected-window) start '(0 . 0) 0)))
+        (save-excursion
+          (dolist (label '("A" "B" "C"))
+            (goto-char (point-min))
+            (search-forward label)
+            (should (equal (get-char-property (1- (point)) 'face) '(:background "#123456"))))
+          (goto-char (point-min))
+          (search-forward "Y")
+          (should-not (equal (get-char-property (1- (point)) 'face) '(:background "#123456"))))
+        (should (equal before (buffer-substring-no-properties (point-min) (point-max))))
+        ;; A publication preserves the pointer region without leaving stale paint.
+        (ebox-node-set-props card '(:hover-style (:background-color "#654321")))
+        (let ((paint (get-char-property (ebox-node-position card) 'face)))
+          (should (equal paint '(:background "#654321"))))
+        (funcall command (list 'mouse-movement (list (selected-window) (point-max) '(0 . 0) 0)))
+        (let ((paint (get-char-property (ebox-node-position card) 'face)))
+          (should-not (equal paint '(:background "#654321"))))))))
+
 (ert-deftest ebox-hover-keeps-a-single-row-element-within-its-cells ()
   (ebox-test-with-mounted (buffer root '(column :width 'stretch
                                                (box :id "one" :width 'stretch
@@ -514,7 +548,7 @@
   ;; A hidden node keeps its layout slot to preserve the surrounding layout,
   ;; but paints nothing; that includes interaction feedback, so an empty list
   ;; slot offers no hover highlight, pointer or help.
-  (ebox-test-with-mounted (buffer root '(column :width (ch 8)
+  (ebox-test-with-mounted (buffer _root '(column :width (ch 8)
                                                (box :height (lh 1)
                                                     :hover-style (:background-color "#123456")
                                                     :help-echo "shown" :pointer hand
@@ -550,7 +584,7 @@
       (should (eq (ebox-focus-first buffer) (car (ebox-selector-query root "#base")))))))
 
 (ert-deftest ebox-activate-noerror-returns-nil-without-command ()
-  (ebox-test-with-mounted (buffer root '(box "Plain"))
+  (ebox-test-with-mounted (buffer _root '(box "Plain"))
     (goto-char (point-min))
     (should-not (ebox-activate nil t))))
 

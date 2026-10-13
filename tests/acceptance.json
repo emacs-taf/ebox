@@ -210,6 +210,11 @@
       "purpose": "Hover feedback joins every row of a multirow element into one mouse-face run instead of highlighting only the pointer's row."
     },
     {
+      "name": "ebox-hover-highlights-disjoint-rows-without-painting-neighbours",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Pointer motion highlights every disjoint row of one element, preserves neighbours and text, refreshes after publication and clears on leave."
+    },
+    {
       "name": "ebox-hover-keeps-a-single-row-element-within-its-cells",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Hover feedback never bleeds past an element's last row into the rest of the screen row."
