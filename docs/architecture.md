@@ -199,6 +199,15 @@ an alternate wherever one display would meet itself: within a run of identical
 fitted glyphs, and at part boundaries.  This preserves exact pixel spacing and
 every glyph while allowing line parts to be shared across flushes.
 
+A complete same-color one-pixel solid frame can round its first and last
+lines on graphical frames. Only blank corner cells become cached SVG slices;
+the middle retains native text and border faces. Original display units are
+checked before splitting so a partial glyph cannot become apparent padding.
+Radius is capped at one line and half the box dimensions; insufficient padding,
+nonuniform borders and terminals retain the square path. Slice keys contain
+geometry, colors and display metrics, never nodes or callbacks. Header bands
+supply their adjacent background color without becoming a rasterized panel.
+
 Interaction decoration happens during composition.  Ebox fills absent `ebox-node`,
 `keymap`, `help-echo`, `pointer` and `mouse-face` properties so the innermost
 explicit node wins and ancestor keymaps cover descendants that do not override

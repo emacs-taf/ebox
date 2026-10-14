@@ -10,6 +10,26 @@
   ],
   "cases": [
     {
+      "name": "ebox-rounded-frame-paints-only-its-outer-horizontal-edges",
+      "file": "tests/ebox-rounded-border-tests.el",
+      "purpose": "Horizontal border paint stays on the outer top and bottom edges rather than leaking into shared blank cells."
+    },
+    {
+      "name": "ebox-rounded-frame-preserves-content-geometry-and-activation",
+      "file": "tests/ebox-rounded-border-tests.el",
+      "purpose": "Changing frame radius preserves labels, geometry and keyboard activation; unmount detaches subsequent updates."
+    },
+    {
+      "name": "ebox-rounded-frame-never-removes-corner-glyphs",
+      "file": "tests/ebox-rounded-border-tests.el",
+      "purpose": "Unpadded corners keep native glyphs intact, including cuts through a wide glyph."
+    },
+    {
+      "name": "ebox-rounded-frame-keeps-nonuniform-borders-and-header-content",
+      "file": "tests/ebox-rounded-border-tests.el",
+      "purpose": "A rounded panel retains header and body content and fixed geometry when unequal borders require square fallback."
+    },
+    {
       "name": "ebox-composition-occlusion-keeps-native-image-fragments",
       "file": "tests/ebox-composition-tests.el",
       "purpose": "Repeated partial occlusion retains the exposed parts of native image runs and raised image slices instead of blanking complete rows."

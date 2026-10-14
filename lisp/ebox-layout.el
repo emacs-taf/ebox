@@ -2017,6 +2017,90 @@ LEFT selects the left side, whose outer end comes first."
             (rest (ebox--space (- width r) padface)))
         (if left (list corner rest) (list rest corner))))))
 
+(defun ebox--outline-slice (width offset box-width box-height y radius inside outside stroke)
+  "Paint a rounded one-pixel outline in a WIDTH-pixel line slice.
+OFFSET and Y locate the slice within the box.  Only background cells are
+replaced; content and interaction still belong to the retained node tree."
+  (let* ((metrics (ebox-image--metrics nil))
+         (key (list 'outline width offset box-width box-height y radius
+                    inside outside stroke metrics)))
+    (or (gethash key ebox--shape-cache)
+        (puthash
+         key
+         (let* ((height (nth 1 metrics))
+                (svg (format
+                      (concat "<svg xmlns='http://www.w3.org/2000/svg' width='%d' height='%d'>"
+                              "<rect width='%d' height='%d' fill='%s'/>"
+                              "<rect x='%.3f' y='%.3f' width='%.3f' height='%.3f' rx='%.3f'"
+                              " fill='%s' stroke='%s' stroke-width='1'/></svg>")
+                      width height width height outside
+                      (- 0.5 offset) (- 0.5 y) (1- box-width) (1- box-height)
+                      (max 0 (- radius 0.5)) inside stroke))
+                (image (create-image svg 'svg t :ascent (nth 2 metrics)
+                                     :scale 1 :margin 0)))
+           (propertize " " 'display (list (list 'slice 0 0 width height) image)))
+         ebox--shape-cache))))
+
+(defun ebox--background-cells-p (text)
+  "Whether TEXT contains only padding cells, not text or media ink."
+  (and (string-match-p "\\`[ \t]*\\'" text)
+       (let ((position 0) (plain t))
+         (while (and plain (< position (length text)))
+           (let ((display (get-text-property position 'display text)))
+             (setq plain (or (null display) (eq (car-safe display) 'space))))
+           (setq position (next-single-property-change position 'display text (length text))))
+         plain)))
+
+(defun ebox--rounded-outline-parts (node geo bi parts)
+  "Round a complete 1px solid frame on its first or last line.
+Return replacement parts or nil when the frame is not uniform, SVG is not
+available, or a corner contains ink.  Never cover a label or an image to
+make room for decoration.  Ordinary middle rows keep the existing fast path."
+  (let* ((cs (ebox-node-cs node))
+         (color (ebox-cs-blc cs))
+         (radius (or (ebox--px (ebox--cv cs 'ebox/border-radius) cs nil) 0)))
+    (when (and (> radius 1) color (ebox-cs-btop cs) (ebox-cs-bbot cs)
+               (= (ebox-geo-bl geo) 1) (= (ebox-geo-br geo) 1)
+               (equal color (ebox-cs-brc cs)) (equal color (ebox-cs-btc cs))
+               (equal color (ebox-cs-bbc cs))
+               (not noninteractive) (display-graphic-p)
+               (image-type-available-p 'svg) (ebox-image--metrics nil))
+      (let* ((line (ebox--join-fresh parts))
+             (width (ebox-geo-bw geo))
+             (lh (ebox--line-px))
+             (height (* (ebox-geo-bh geo) lh))
+             (r (max 1 (floor (min radius lh (/ width 2) (/ height 2)))))
+             (left-cut (ebox--px-cut line r 0 0))
+             (right-cut (ebox--px-cut line (- width r) 0 0)))
+        ;; Inspect original units before splitting: a cut through a glyph
+        ;; turns its fragments into spaces and would hide that ink.
+        (when (and (> r 1)
+                   (ebox--background-cells-p
+                    (substring line 0 (or (nth 2 left-cut) (car left-cut))))
+                   (ebox--background-cells-p (substring line (car right-cut))))
+          (let* ((middle (copy-sequence
+                          (car (ebox--split-at (ebox--cut-right line r left-cut)
+                                               (- width (* 2 r))))))
+                 (base (or (ebox-cs-bg cs) (face-background 'default nil t)))
+                 (outside (or (ebox--face-background (ebox--parent-padface node))
+                              (face-background 'default nil t)))
+                 (left-bg (or (and (> (length middle) 0)
+                                   (ebox--face-background (get-text-property 0 'face middle))) base))
+                 (right-bg (or (and (> (length middle) 0)
+                                    (ebox--face-background
+                                     (get-text-property (1- (length middle)) 'face middle))) base))
+                 (stroke (if (eq color 'default) (face-foreground 'default nil t) color)))
+            (when (= bi 0)
+              (add-face-text-property 0 (length middle) (list :overline stroke) t middle))
+            (when (= bi (1- (ebox-geo-bh geo)))
+              (add-face-text-property 0 (length middle)
+                                      (list :underline (list :position t :color stroke)) t middle))
+            (puthash middle (- width (* 2 r)) ebox--part-widths)
+            (list (ebox--outline-slice r 0 width height (* bi lh) r left-bg outside stroke)
+                  middle
+                  (ebox--outline-slice r (- width r) width height (* bi lh) r
+                                       right-bg outside stroke))))))))
+
 (defun ebox--border-parts (node geo bi tail)
   "Return the strings of border-box line BI of NODE followed by TAIL.
 Overlays and top or bottom borders decorate the whole border-box line, which
@@ -2069,24 +2153,30 @@ is then joined into one string."
       (let ((line (if (ebox-node-overlays node)
                       (ebox--apply-overlays node geo bi (ebox--join-parts parts))
                     parts)))
-        (if (not (or top bottom))
+        (let ((rounded (and (or top bottom) (not noninteractive)
+                            (display-graphic-p)
+                            (ebox--rounded-outline-parts node geo bi line))))
+          (cond
+           (rounded (cons rounded tail))
+           ((not (or top bottom))
             ;; Overlays only splice strings: the line stays a list.
-            (cons line tail)
-          (setq line (ebox--join-fresh line))
-          (puthash line (ebox-geo-bw geo) ebox--part-widths)
-          (when top
-            (add-face-text-property 0 (length line)
-                                    (list :overline (let ((c (ebox-cs-btc cs)))
-                                                      (if (eq c 'default) t c)))
-                                    t line))
-          (when bottom
-            (add-face-text-property 0 (length line)
-                                    (list :underline
-                                          (list :position t
-                                                :color (let ((c (ebox-cs-bbc cs)))
-                                                         (if (eq c 'default) 'foreground-color c))))
-                                    t line))
-          (cons line tail))))))
+            (cons line tail))
+           (t
+            (setq line (ebox--join-fresh line))
+            (puthash line (ebox-geo-bw geo) ebox--part-widths)
+            (when top
+              (add-face-text-property 0 (length line)
+                                      (list :overline (let ((c (ebox-cs-btc cs)))
+                                                       (if (eq c 'default) t c)))
+                                      t line))
+            (when bottom
+              (add-face-text-property 0 (length line)
+                                      (list :underline
+                                            (list :position t
+                                                  :color (let ((c (ebox-cs-bbc cs)))
+                                                           (if (eq c 'default) 'foreground-color c))))
+                                      t line))
+            (cons line tail))))))))
 
 (defvar ebox--part-widths (make-hash-table :test 'eq :weakness 'key)
   "Pixel widths of composed part strings, which are shared and immutable.")

@@ -6,6 +6,11 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Complete, same-color 1 px solid borders now follow `:border-radius` on
+  graphical frames with SVG support. Corners use only blank padding; text
+  and images are never covered to make room for a curve. Other borders and
+  terminals keep square outlines, with no change to layout or input.
+
 - The `:backdrop-filter` style property dims the cells an overlay covers while
   keeping their text and images visible.  Its `(brightness AMOUNT)` value
   multiplies the covered foreground and background colors, so a modal backdrop

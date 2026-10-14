@@ -152,6 +152,11 @@ display。Emacs 会合并相邻且 `display` 对象 `eq` 的字符，因此 `ebo
 并在同一 display 相遇处替换为 alternate：拟合相同字形序列时如此，part 边界拼接时也如此。这样既保持精确像素间距和
 每个字形，又允许 line parts 跨 flush 共享。
 
+完整、同色的 1 px solid 边框在图形 frame 上可对首末行作圆角绘制。只有空白角落会换成缓存的 SVG 切片，
+中间仍是原生文字和边框 face。切分前检查原始显示单元，避免把被切断的字形误判为空白。
+半径最多为一标准行且不超过盒宽高的一半；padding 不足、非均匀边框与终端保留方角路径。
+切片缓存键只含几何、颜色与显示度量，不持有节点或回调；标题色带取相邻内容的背景，不把面板整体栅格化。
+
 交互 decoration 在 composition 中发生。Ebox 填充未设置的 `ebox-node`、`keymap`、`help-echo`、`pointer` 和
 `mouse-face` property，使最内层显式节点胜出，ancestor keymap 覆盖未 override 的 descendant。
 节点拥有自己的装饰缓存，使 hover face 在多行之间保持同一对象。
