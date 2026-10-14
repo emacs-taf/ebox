@@ -10,6 +10,21 @@
   ],
   "cases": [
     {
+      "name": "ebox-composition-occlusion-keeps-native-image-fragments",
+      "file": "tests/ebox-composition-tests.el",
+      "purpose": "Repeated partial occlusion retains the exposed parts of native image runs and raised image slices instead of blanking complete rows."
+    },
+    {
+      "name": "ebox-composition-moving-overflow-keeps-canvas-and-neighbors",
+      "file": "tests/ebox-composition-tests.el",
+      "purpose": "Moving and resizing overflowing windows clips text and image rows without shifting neighbors; retained output matches fresh paint."
+    },
+    {
+      "name": "ebox-composition-narrow-stack-keeps-padding-and-border",
+      "file": "tests/ebox-composition-tests.el",
+      "purpose": "A stacked child wider than its parent cannot displace the parent's padding and border."
+    },
+    {
       "name": "ebox-hidden-node-releases-replaced-callbacks",
       "file": "tests/ebox-lifetime-tests.el",
       "purpose": "A live hidden node releases callbacks removed from its public authored properties."

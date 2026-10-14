@@ -87,6 +87,14 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Clip oversized stacked children to their parent's content width before
+  composing overlays. Moving or resizing overlapping windows no longer adds
+  the hidden content's width to the canvas, shifts neighboring windows or
+  misaligns image rows. Intrinsic child sizes remain unchanged.
+- Partial occlusion now crops complete native image glyphs as well as image
+  slices, preserving baseline modifiers. A window covering part of a native
+  image row no longer blanks the exposed remainder of that row.
+
 - Pointer hover now highlights every painted row of side-by-side multirow
   elements, without filling intervening gaps or adjacent elements.
 

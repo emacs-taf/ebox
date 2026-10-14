@@ -1898,11 +1898,23 @@ The strings span the content width CW in pixels."
        (let ((item (ebox--find-item geo ci)))
          (if (null item)
              (cons (ebox--space cw padface) tail)
-           (let ((x (ebox--item-x item)))
-             (cons (ebox--space x padface)
-                   (ebox--item-parts item (- ci (ebox--item-y item))
-                                     (cons (ebox--space (- cw x (ebox--item-w item)) padface)
-                                           tail)))))))
+           (let ((x (ebox--item-x item)) (w (ebox--item-w item)))
+             ;; A stacked child can retain an intrinsic/minimum width larger
+             ;; than this content box.  Clip its paint, not its geometry: an
+             ;; overlay splice must receive exactly the advertised width or
+             ;; the surplus shifts every later window on the same row.
+             (if (> (+ x w) cw)
+                 (nconc (list (ebox--space (min x cw) padface))
+                        (when (< x cw)
+                          (car (ebox--split-parts
+                                (ebox--join-parts
+                                 (ebox--item-parts item (- ci (ebox--item-y item)) nil))
+                                (- cw x))))
+                        tail)
+               (cons (ebox--space x padface)
+                     (ebox--item-parts item (- ci (ebox--item-y item))
+                                       (cons (ebox--space (- cw x w) padface)
+                                             tail))))))))
       (_
        (let ((cursor 0) (hits nil) (sorted t) (last -1) (shown nil))
          (dotimes (i (ebox-geo-n geo))
@@ -2169,21 +2181,33 @@ through the face width table, without consing per unit."
 
 (defun ebox--unit-space (width string pos &optional offset)
   "Return WIDTH pixels of STRING's unit at POS, starting OFFSET pixels in.
-An image slice unit keeps the visible part of its slice.  Any other unit
-becomes a space that keeps its text properties other than `display', so a
+An image unit keeps the visible part as a slice, preserving display modifiers.
+Any other unit becomes a space that keeps its text properties other than
+`display', so a
 cut interactive or faced unit keeps its keymap, pointer and face."
   (let* ((props (and (< pos (length string)) (text-properties-at pos string)))
          (display (plist-get props 'display))
-         (slice (car-safe display)))
-    (if (and (eq (car-safe slice) 'slice) (> width 0)
-             (cl-every #'natnump (cdr slice))
-             (eq (car-safe (cadr display)) 'image))
-        (let ((part (substring string pos (1+ pos))))
+         (image (cond ((eq (car-safe display) 'image) display)
+                      ((consp (car-safe display))
+                       (if (eq (car-safe (cadr display)) 'image) (cadr display)
+                         (assq 'image display)))))
+         (slice (and image (not (eq image display))
+                     (if (eq (car-safe (car display)) 'slice) (car display)
+                       (assq 'slice display)))))
+    (if (and image (> width 0)
+             (or (null slice) (natnump (nth 1 slice))))
+        (let* ((part (substring string pos (1+ pos)))
+               ;; Native producers can provide a complete image row rather
+               ;; than an existing slice.  Crop that glyph too; height 1.0
+               ;; means its complete displayed height, without decoding it.
+               (crop (list 'slice (+ (if slice (nth 1 slice) 0) (or offset 0))
+                           (if slice (nth 2 slice) 0) width
+                           (if slice (nth 4 slice) 1.0))))
           (put-text-property
            0 1 'display
-           (cons (list 'slice (+ (nth 1 slice) (or offset 0)) (nth 2 slice)
-                       width (nth 4 slice))
-                 (cdr display))
+           (cond ((eq image display) (list crop image))
+                 (slice (mapcar (lambda (item) (if (eq item slice) crop item)) display))
+                 (t (cons crop display)))
            part)
           part)
       (if (null (cl-loop for (key) on props by #'cddr

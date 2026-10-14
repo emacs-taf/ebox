@@ -287,12 +287,13 @@ under it repaints without moving text."
 
 (defun ebox--slice-width (display start end)
   "Return the pixel width of one glyph START..END showing image slice DISPLAY.
-Return nil unless DISPLAY is ((slice X Y W H) IMAGE) with pixel W."
-  (and (= end (1+ start))
-       (let ((slice (car-safe display)))
-         (and (eq (car-safe slice) 'slice)
-              (natnump (nth 3 slice))
-              (eq (car-safe (cadr display)) 'image)
+Return nil unless DISPLAY contains a slice with pixel W and an image.
+Other display modifiers, such as `raise', do not change the slice width."
+  (and (= end (1+ start)) (consp (car-safe display))
+       (let ((slice (if (eq (car-safe (car display)) 'slice) (car display)
+                      (assq 'slice display))))
+         (and slice (natnump (nth 3 slice))
+              (or (eq (car-safe (cadr display)) 'image) (assq 'image display))
               (nth 3 slice)))))
 
 (defun ebox--display-width (string start end &optional face)
