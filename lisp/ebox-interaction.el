@@ -37,11 +37,6 @@
 
 ;;;; Text properties of interactive nodes
 
-(defconst ebox--hover-properties
-  '(:color :background-color :font-weight :font-style :text-decoration-line
-    :text-decoration-style :text-decoration-color)
-  "Paint properties accepted by :hover-style.")
-
 (defun ebox--hover-face (value)
   "Return the native mouse face for :hover-style VALUE."
   (unless (and (proper-list-p value) (zerop (% (length value) 2)))
@@ -1749,39 +1744,36 @@ already ended, for example after its buffer was unmounted, returns nil."
           (ebox-mount-hover-saved mount) saved)))
 
 (defvar-local ebox--pointer-hover-node nil
-  "Node whose disjoint painted spans are highlighted under the pointer.")
-(defvar-local ebox--pointer-hover-overlays nil
-  "Transient paint overlays for the current pointer target.")
+  "Node whose :hover-style paints under the pointer in this buffer.")
 (defvar ebox--pointer-hover-buffer nil
   "Mounted buffer currently owning pointer hover paint.")
 
 (defun ebox--clear-pointer-hover ()
   "Remove pointer paint from the current buffer without changing its text."
-  (mapc #'delete-overlay ebox--pointer-hover-overlays)
-  (setq ebox--pointer-hover-overlays nil ebox--pointer-hover-node nil)
-  (when (eq ebox--pointer-hover-buffer (current-buffer))
-    (setq ebox--pointer-hover-buffer nil)))
+  (let ((node ebox--pointer-hover-node))
+    (setq ebox--pointer-hover-node nil)
+    (when (eq ebox--pointer-hover-buffer (current-buffer))
+      (setq ebox--pointer-hover-buffer nil))
+    (when (and (ebox-node-p node) (ebox--node-live-p node ebox--buffer-mount))
+      (setf (ebox-node-hover node) nil)
+      (ebox--mutation (ebox--mark node ebox--d-style)))))
 
-(defun ebox--paint-pointer-hover (node &optional refresh)
-  "Highlight every painted span owned by NODE, leaving its neighbours alone.
-REFRESH rebuilds spans after a publication changed their buffer positions."
-  (unless (and (eq node ebox--pointer-hover-node) (not refresh))
-    (ebox--clear-pointer-hover)
-    (when (and node (ebox--node-live-p node ebox--buffer-mount))
-      (let* ((face (plist-get (ebox--inter-text-properties node) 'mouse-face))
-             (bounds (and face (ebox-node-bounds node t)))
-             (position (car bounds)) (end (cdr bounds)))
-        (when bounds
-          (setq ebox--pointer-hover-node node
-                ebox--pointer-hover-buffer (current-buffer))
-          (while (< position end)
-            (let ((next (next-single-property-change position 'mouse-face nil end)))
-              (when (eq face (get-text-property position 'mouse-face))
-                (let ((overlay (make-overlay position next nil nil nil)))
-                  (overlay-put overlay 'face face)
-                  (overlay-put overlay 'priority 1)
-                  (push overlay ebox--pointer-hover-overlays)))
-              (setq position next))))))))
+(defun ebox--paint-pointer-hover (node)
+  "Paint NODE's `:hover-style' in the current buffer, or clear it for nil.
+NODE is restyled through its own computed paint, so a hovered control keeps
+its border radius and its padding coverage.  A detached previous target
+cannot repaint and keeps no allocated paint."
+  (unless (eq node ebox--pointer-hover-node)
+    (ebox--mutation
+      (let ((old ebox--pointer-hover-node))
+        (when (and (ebox-node-p old) (ebox--node-live-p old ebox--buffer-mount))
+          (setf (ebox-node-hover old) nil)
+          (ebox--mark old ebox--d-style))
+        (when (and (ebox-node-p node) (ebox--node-live-p node ebox--buffer-mount))
+          (setf (ebox-node-hover node) t)
+          (ebox--mark node ebox--d-style))))
+    (setq ebox--pointer-hover-node (and (ebox-node-p node) node)
+          ebox--pointer-hover-buffer (and (ebox-node-p node) (current-buffer)))))
 
 (defun ebox--pointer-hover-owner (point)
   "Return the owner of the hover face painted at POINT, respecting nil blockers."
@@ -2151,13 +2143,10 @@ The canvas has no text selection; an input session keeps its own region."
     (kill-local-variable 'track-mouse)))
 
 (defun ebox--after-flush-hover (buffer)
-  "Track hover capabilities and refresh active pointer paint in BUFFER."
+  "Enable BUFFER's mouse tracking once it paints hover feedback."
   (when (buffer-local-value 'ebox-buffer-mode buffer)
     (unless (local-variable-p 'track-mouse buffer)
-      (ebox--hover-sync buffer))
-    (with-current-buffer buffer
-      (when ebox--pointer-hover-node
-        (ebox--paint-pointer-hover ebox--pointer-hover-node t)))))
+      (ebox--hover-sync buffer))))
 
 (add-hook 'ebox-after-flush-functions #'ebox--after-flush-hover)
 

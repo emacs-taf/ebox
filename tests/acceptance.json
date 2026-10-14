@@ -227,7 +227,17 @@
     {
       "name": "ebox-hover-highlights-disjoint-rows-without-painting-neighbours",
       "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Pointer motion highlights every disjoint row of one element, preserves neighbours and text, refreshes after publication and clears on leave."
+      "purpose": "Pointer motion repaints only the pointed element across all its rows, preserves neighbours and text, follows a publication and restores paint on leave."
+    },
+    {
+      "name": "ebox-hover-paints-the-padded-box-through-the-node-style",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Hover paint covers the node's padding rows through its own computed paint, and leaving restores the resting paint everywhere."
+    },
+    {
+      "name": "ebox-hover-rests-at-an-explicit-nil-blocker",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Pointer hover over an explicit nil blocker leaves the element resting, and moving to a sibling paints the ancestor's fill again."
     },
     {
       "name": "ebox-hover-keeps-a-single-row-element-within-its-cells",

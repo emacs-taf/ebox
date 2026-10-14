@@ -250,7 +250,7 @@ composed without caching, or nil when none are composed."
   (w 0) (h 0) (x 0) (y 0)
   meas intr contrib seen avail layout lines
   dkids ops overlays host placed (scroll 0) (pinned t)
-  mount inter-cache)
+  mount inter-cache hover)
 
 ;; Dirty bits.
 (defconst ebox--d-style 1)
@@ -712,12 +712,39 @@ BG, DECO and HIDDEN are the derived paint state children inherit too."
                                          :subjects t))
                     scopes))))
 
+(defconst ebox--hover-properties
+  '(:color :background-color :font-weight :font-style :text-decoration-line
+    :text-decoration-style :text-decoration-color)
+  "Paint properties accepted by :hover-style.")
+
+(defun ebox--hover-declarations (value)
+  "Return :hover-style VALUE as canonical Ebox paint declarations.
+VALUE is an even plist of `ebox--hover-properties'; an odd plist or an
+unsupported property signals `ebox-error'."
+  (unless (and (proper-list-p value) (zerop (% (length value) 2)))
+    (signal 'ebox-error (list "Ebox :hover-style must be an even plist" value)))
+  (cl-loop for (key _value) on value by #'cddr
+           unless (memq key ebox--hover-properties)
+           do (signal 'ebox-error (list "Ebox :hover-style does not support" key)))
+  (ebox-style-compile-declarations value))
+
+(defun ebox--hover-values (node vals)
+  "Return VALS with NODE's :hover-style declarations overriding its paint."
+  (cl-loop for (id value) on (ebox--hover-declarations
+                              (plist-get (ebox-node-inter node) :hover-style))
+           by #'cddr
+           do (setq vals (plist-put vals id value)))
+  vals)
+
 (defun ebox--node-style (node parent-cs)
-  "Return the shared computed style of NODE under PARENT-CS."
+  "Return the shared computed style of NODE under PARENT-CS.
+A node painting transient pointer hover bypasses the shared style cache and
+merges its :hover-style declarations into the computed paint."
   (let* ((env (let ((env (ebox--node-env node)) (old (ebox-node-env node)))
                 (if (ebox--env-equal env old) old env)))
          (_ (setf (ebox-node-env node) env))
          (scopes (and env (ebox--applicable-scopes node env)))
+         (hover (ebox-node-hover node))
          (key (ebox--style-key node scopes))
          (pkey (and parent-cs
                     (if ebox-style--explicit-inherit parent-cs
@@ -727,10 +754,11 @@ BG, DECO and HIDDEN are the derived paint state children inherit too."
                         (puthash pkey (make-hash-table :test 'equal)
                                  ebox--cs-cache))
                   ebox--root-cs-table)))
-    (or (and key (gethash key table))
-        (let ((cs (ebox--make-cs (ebox--compute-values node parent-cs scopes)
-                                 parent-cs (ebox-node-tag node))))
-          (when key
+    (or (and (not hover) key (gethash key table))
+        (let* ((vals (ebox--compute-values node parent-cs scopes))
+               (vals (if hover (ebox--hover-values node vals) vals))
+               (cs (ebox--make-cs vals parent-cs (ebox-node-tag node))))
+          (when (and key (not hover))
             (when (> (hash-table-count table) 2048) (clrhash table))
             (puthash key cs table))
           cs))))

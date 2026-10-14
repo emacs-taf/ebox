@@ -516,6 +516,71 @@
         (let ((paint (get-char-property (ebox-node-position card) 'face)))
           (should-not (equal paint '(:background "#654321"))))))))
 
+(ert-deftest ebox-hover-paints-the-padded-box-through-the-node-style ()
+  "Hover paint follows the node's own box, every painted row keeping the fill."
+  (ebox-test-with-mounted
+      (buffer root '(column :width (ch 12)
+                            (box :id "pill" :width (ch 10) :border-radius (px 4)
+                                 :background-color "#101010"
+                                 :padding ((lh 0.5) (ch 2))
+                                 :hover-style (:background-color "#EEEEEE")
+                                 "Hi")))
+    (save-window-excursion
+      (switch-to-buffer buffer)
+      (let* ((pill (car (ebox-selector-query root "#pill")))
+             (command (key-binding [mouse-movement]))
+             (start (ebox-node-position pill)))
+        (funcall command (list 'mouse-movement (list (selected-window) start '(0 . 0) 0)))
+        (pcase-let ((`(,from . ,to) (ebox-node-bounds pill t)))
+          (should from)
+          (save-excursion
+            (goto-char from)
+            (while (< (point) to)
+              (when (get-text-property (point) 'ebox-node)
+                (should (equal (get-char-property (point) 'face)
+                               '(:background "#EEEEEE"))))
+              (forward-char))))
+        ;; Leaving restores the resting paint on every row, padding included.
+        (funcall command (list 'mouse-movement (list (selected-window) (point-max) '(0 . 0) 0)))
+        (pcase-let ((`(,from . ,to) (ebox-node-bounds pill t)))
+          (save-excursion
+            (goto-char from)
+            (while (< (point) to)
+              (when (get-text-property (point) 'ebox-node)
+                (should (equal (get-char-property (point) 'face)
+                               '(:background "#101010"))))
+              (forward-char))))))))
+
+(ert-deftest ebox-hover-rests-at-an-explicit-nil-blocker ()
+  "Hover over a nil blocker leaves the element's resting paint everywhere."
+  (ebox-test-with-mounted
+      (buffer root '(column :width (ch 12)
+                            (box :id "outer" :width (ch 10)
+                                 :hover-style (:background-color "#123456")
+                                 (box :id "plain" "A")
+                                 (box :id "own" :hover-style nil "B"))))
+    (save-window-excursion
+      (switch-to-buffer buffer)
+      (let* ((own (car (ebox-selector-query root "#own")))
+             (plain (car (ebox-selector-query root "#plain")))
+             (command (key-binding [mouse-movement]))
+             (own-start (ebox-node-position own))
+             (plain-start (ebox-node-position plain)))
+        (funcall command (list 'mouse-movement (list (selected-window) own-start '(0 . 0) 0)))
+        (should-not (equal (get-char-property plain-start 'face)
+                           '(:background "#123456")))
+        (should-not (equal (get-char-property own-start 'face)
+                           '(:background "#123456")))
+        ;; Moving onto the plain sibling paints the ancestor's hover fill and
+        ;; returning to the blocker clears it again.
+        (funcall command (list 'mouse-movement
+                               (list (selected-window) plain-start '(0 . 0) 0)))
+        (should (equal (get-char-property plain-start 'face)
+                       '(:background "#123456")))
+        (funcall command (list 'mouse-movement (list (selected-window) own-start '(0 . 0) 0)))
+        (should-not (equal (get-char-property plain-start 'face)
+                           '(:background "#123456")))))))
+
 (ert-deftest ebox-hover-keeps-a-single-row-element-within-its-cells ()
   (ebox-test-with-mounted (buffer root '(column :width 'stretch
                                                (box :id "one" :width 'stretch

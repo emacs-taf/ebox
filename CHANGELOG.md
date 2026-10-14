@@ -87,6 +87,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Pointer hover repaints the hovered node through its own computed paint
+  instead of a rectangular text band, so a hovered control keeps its
+  `:border-radius` and covers every padding row; leaving restores the
+  resting paint on the same rows.
+
 - Clip oversized stacked children to their parent's content width before
   composing overlays. Moving or resizing overlapping windows no longer adds
   the hidden content's width to the canvas, shifts neighboring windows or
