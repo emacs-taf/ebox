@@ -300,6 +300,13 @@ inside the node's box is tracked by the session itself, which consumes the
 release, so clicks, drags and multi-clicks never reach the canvas press
 command.  Flushes and refits never wait for a session.
 
+Focus eligibility combines liveness, visibility, the disabled flag and a
+cover check against overlays.  A stop scrolled out of its scroller is
+eligible even when the line its layout would occupy is painted by an
+unrelated fixed region; revealing the stop decides its real position.  A
+stop genuinely covered by an overlay still refuses focus, so modal backdrops
+keep input out.
+
 Keyboard focus is mount state, not text position.  Tab order, directional
 movement and edges are derived on demand from the live tree: the innermost
 visible `:focus-scope modal` node bounds the search, stops follow ascending

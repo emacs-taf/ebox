@@ -557,6 +557,25 @@ gesture alive after the first release until the next press."
 
 ;;;; Focus
 
+(defun ebox--focus-scrolled-out-p (node)
+  "Return non-nil when a scrolling ancestor hides NODE.
+A tab stop scrolled out of view paints nothing, so the cover check cannot
+judge it; focus reveals it and it stays reachable."
+  (let ((scroller (ebox--clip-parent node))
+        (scrolled-out nil))
+    (while (and scroller (not scrolled-out))
+      (when (ebox--scrollable-p scroller)
+        (let* ((geo (ebox-node-layout scroller))
+               (top (+ (or (ebox-node-root-line scroller) 0)
+                       (ebox-geo-mt geo) (ebox-geo-pt geo)))
+               (bottom (+ top (ebox-geo-vh geo)))
+               (start (or (ebox-node-root-line node) top))
+               (end (+ start (ebox-node-h node))))
+          (when (or (<= end top) (>= start bottom))
+            (setq scrolled-out t))))
+      (setq scroller (ebox--clip-parent scroller)))
+    scrolled-out))
+
 (defun ebox--focusable-p (node mount)
   "Return non-nil when NODE can receive focus in MOUNT."
   (and (ebox--node-live-p node mount)
@@ -565,6 +584,7 @@ gesture alive after the first release until the next press."
        (let ((geometry (ebox-node-geometry node)))
          (and geometry (> (plist-get geometry :height) 0)
               (or (ebox-node-text-p node)
+                  (ebox--focus-scrolled-out-p node)
                   (ebox--uncovered-x node mount geometry))))))
 
 (defun ebox--focus-scope (mount)

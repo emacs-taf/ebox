@@ -4,6 +4,15 @@ All notable changes to Ebox are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- A tab stop scrolled out of a scroller can receive focus again.  The cover
+  check that rejects controls hidden under an overlay used the stop's layout
+  line, so a line that happened to lie under a fixed region (a footer, a
+  toolbar) blocked focus even though the stop was merely scrolled away.
+  Focus now reveals scrolled-out stops while a stop genuinely covered by an
+  overlay still refuses focus.
+
 ### Added
 
 - Complete, same-color 1 px solid borders now follow `:border-radius` on

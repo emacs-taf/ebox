@@ -10,6 +10,11 @@
   ],
   "cases": [
     {
+      "name": "ebox-focus-reaches-a-stop-scrolled-beneath-a-fixed-region",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "A tab stop scrolled out of a scroller stays focusable although its layout line lies under an unrelated overlay; focus reveals it."
+    },
+    {
       "name": "ebox-rounded-frame-paints-only-its-outer-horizontal-edges",
       "file": "tests/ebox-rounded-border-tests.el",
       "purpose": "Horizontal border paint stays on the outer top and bottom edges rather than leaking into shared blank cells."

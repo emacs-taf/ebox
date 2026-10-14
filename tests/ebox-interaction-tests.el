@@ -208,6 +208,26 @@
       (should (eq (ebox-focused-node buffer) (node "b")))
       (should (eq (ebox-focus-direction 'right buffer) (node "right"))))))
 
+(ert-deftest ebox-focus-reaches-a-stop-scrolled-beneath-a-fixed-region ()
+  "A tab stop scrolled out of a scroller is focusable even when its layout
+line lies under an unrelated overlay; focus reveals it."
+  (ebox-test-with-mounted
+      (buffer root
+              `(column :position relative
+                       (column :id "list" :height (lh 3) :overflow scroll
+                               ,@(mapcar (lambda (i)
+                                           `(box :id ,(format "i%d" i) :tab-index 0
+                                                 ,(format "Item %d" i)))
+                                         (number-sequence 0 9)))
+                       (box :id "bar" :position absolute :left (ch 0) :top (lh 7)
+                            :width (ch 20) :height (lh 3) ""))
+              :width 200 :height 10)
+    (let ((last (ebox-test--node root "i9"))
+          (list (ebox-test--node root "list")))
+      (ebox-focus last buffer)
+      (should (> (ebox-node-scroll-offset list) 0))
+      (should (ebox-node-ancestor-p last (ebox-node-at (point) buffer))))))
+
 (ert-deftest ebox-modal-focus-scope-confines-navigation ()
   (ebox-test-with-mounted (buffer root
                            '(column
