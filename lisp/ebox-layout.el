@@ -2579,6 +2579,25 @@ and blanking it would hide the content the overlay must preserve."
       (cl-incf position))
     blank))
 
+(defun ebox--backdrop-cover-parts (parts cover)
+  "Keep PARTS' pixels but replace their native input properties with COVER's.
+A filtered overlay borrows paint, never the covered text's hit owner,
+keymap, help or hover.  Preserve COVER's property runs so even blank child
+controls keep their own input identity.  Cached source strings are not mutated."
+  (let ((position 0) (length (length cover)) (rest parts) out)
+    (while (< position length)
+      (let* ((next (next-property-change position cover length))
+             (width (ebox--part-width (substring cover position next)))
+             (split (ebox--split-parts rest width))
+             (props (cl-loop for property in '(ebox-node keymap help-echo pointer mouse-face)
+                             append (list property (get-text-property position property cover)))))
+        (dolist (part (car split))
+          (let ((copy (copy-sequence part)))
+            (add-text-properties 0 (length copy) props copy)
+            (push copy out)))
+        (setq position next rest (cdr split))))
+    (nreverse out)))
+
 (defun ebox--backdrop-filter-merge-part (string behind)
   "Return STRING with blank cells replaced by dimmed BEHIND pixels.
 BEHIND is a parts list covering at least STRING's width.  Return
@@ -2588,7 +2607,10 @@ REST is the unused tail of BEHIND."
    ((zerop (length string)) (cons (list string) behind))
    ((ebox--backdrop-filter-blank-p string)
     (let ((split (ebox--split-parts behind (ebox--part-width string))))
-      (cons (if (car split) (car split) (list string)) (cdr split))))
+      (cons (if (car split)
+                (ebox--backdrop-cover-parts (car split) string)
+              (list string))
+            (cdr split))))
    ((not (string-match-p " " string))
     (let ((split (ebox--split-parts behind (ebox--part-width string))))
       (cons (list string) (cdr split))))
@@ -2603,7 +2625,9 @@ REST is the unused tail of BEHIND."
                            (substring string position (1+ position))))
                    (split (ebox--split-parts rest width)))
               (setq rest (cdr split))
-              (dolist (piece (car split)) (push piece out))
+              (dolist (piece (ebox--backdrop-cover-parts
+                              (car split) (substring string position (1+ position))))
+                (push piece out))
               (cl-incf position))
           (let ((start position))
             (cl-incf position)

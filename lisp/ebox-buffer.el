@@ -1108,7 +1108,12 @@ Non-nil WIDTH or HEIGHT fixes that dimension, as for a fixed mount."
   "Mount INPUT, a root node or author form, in BUFFER-OR-NAME and return the root.
 The buffer's text is replaced and then owned by Ebox, and its default
 background follows the root's background color.  OPTIONS may contain
-:width and :height to fix the viewport instead of following the window."
+:width and :height to fix the viewport instead of following the window.
+:observer is a function of buffer and report, installed before the first
+flush; nil disables observation, as with `ebox-buffer-set-observer'."
+  (let ((observer (plist-get options :observer)))
+    (unless (or (null observer) (functionp observer))
+      (signal 'wrong-type-argument (list 'functionp observer))))
   (let* ((buffer (get-buffer-create buffer-or-name))
          (root (ebox--input-root input)))
     (when (ebox-node-parent root)
@@ -1118,6 +1123,7 @@ background follows the root's background color.  OPTIONS may contain
       (let ((mount (ebox-mount--make :root root :buffer buffer
                                      :fixed-vw (plist-get options :width)
                                      :fixed-vh (plist-get options :height)
+                                     :observer (plist-get options :observer)
                                      :display-saved (ebox--own-display))))
         (pcase-let ((`(,w . ,h) (ebox--measure-viewport mount)))
           (setf (ebox-mount-vw mount) w (ebox-mount-vh mount) h))

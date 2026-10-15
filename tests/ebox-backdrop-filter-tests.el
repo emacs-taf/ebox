@@ -1,4 +1,5 @@
-;;; ebox-backdrop-filter-tests.el --- Ebox backdrop filter tests -*- lexical-binding: t; -*-
+;;; -*- lexical-binding: t; -*-
+;;; ebox-backdrop-filter-tests.el --- Ebox backdrop filter tests
 
 ;; Public behaviour of the `:backdrop-filter' style property: an overlay that
 ;; declares it keeps the covered cells and dims their colors.
@@ -79,6 +80,40 @@
     (should (ebox-test-buffer-matches-render-p root buffer))
     (should (null (ebox-node-bounds (ebox-node-child root 0))))
     (should (ebox-node-bounds (ebox-node-child root 1)))))
+
+(ert-deftest ebox-backdrop-filter-keeps-overlay-input-and-blocks-underlay ()
+  "Visible dimmed text uses the covering overlay's native input, never its source."
+  (dolist (interactive '(t nil))
+    (let* ((under-count 0) (over-count 0)
+           (under-map (ebox-keymap-create :activate (lambda () (cl-incf under-count))))
+           (over-map (and interactive
+                          (ebox-keymap-create :activate (lambda () (cl-incf over-count))))))
+      (ebox-test-with-mounted
+          (buffer root
+                  (list 'column :width '(ch 20) :height '(lh 3)
+                        (list 'box :width '(ch 20) :height '(lh 1)
+                              :keymap under-map :help-echo "Underlay" :pointer 'hand
+                              "Clickable background")
+                        (list 'box :position 'absolute :layer 'root
+                              :left '(px 0) :top '(lh 0)
+                              :width '(% 100) :height '(% 100)
+                              :backdrop-filter '(brightness 0.5)
+                              :keymap over-map :help-echo "Overlay" :pointer 'arrow)))
+        (let ((node (ebox-node-at (point-min) buffer))
+              (overlay (ebox-node-child root 1))
+              (map (get-text-property (point-min) 'keymap)))
+          (let ((owns-hit (eq node overlay))) (should owns-hit))
+          (should (equal (get-text-property (point-min) 'help-echo) "Overlay"))
+          (should (eq (get-text-property (point-min) 'pointer) 'arrow))
+          (when interactive
+            (let ((command (lookup-key map [mouse-1]))
+                  (last-input-event (list 'mouse-1 (list (selected-window) 1 '(0 . 0) 0))))
+              (should (commandp command))
+              (call-interactively command)))
+          (should (= under-count 0))
+          (should (= over-count (if interactive 1 0)))
+          (let ((matches (ebox-test-buffer-matches-render-p root buffer)))
+            (should matches)))))))
 
 (ert-deftest ebox-backdrop-filter-brightness-range-and-invalid-values ()
   "Brightness 1 keeps colors, higher values clamp, and other filters\nare dropped instead of dimming."

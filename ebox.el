@@ -79,6 +79,10 @@
 ;; Mount INPUT, a root node or author form, in BUFFER-OR-NAME and return the root.
 ;; While mounted, the buffer's default background follows the root's
 ;; background color, so window space beyond the laid-out rows matches it.
+;; OPTIONS accepts :width and :height for a fixed viewport, plus :observer,
+;; a function of buffer and report installed before the first flush. Nil
+;; disables observation. Invalid observers signal wrong-type-argument before
+;; replacing an existing mount; reports follow ebox-buffer-set-observer.
 ;;
 ;; Function: ebox-render (input)
 ;;;###autoload (autoload 'ebox-render "ebox" nil nil)

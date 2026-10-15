@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Filtered backdrops now keep their own native keymaps, hit ownership,
+  pointer and help feedback over the visible background pixels. Outside
+  clicks can dismiss the covering modal without activating covered controls.
+
 - A tab stop scrolled out of a scroller can receive focus again.  The cover
   check that rejects controls hidden under an overlay used the stop's layout
   line, so a line that happened to lie under a fixed region (a footer, a
@@ -14,6 +18,9 @@ All notable changes to Ebox are documented here.
   overlay still refuses focus.
 
 ### Added
+
+- `ebox-mount` accepts an `:observer` installed before its first flush, so
+  root replacement can keep complete paint timing and update reports.
 
 - Complete, same-color 1 px solid borders now follow `:border-radius` on
   graphical frames with SVG support. Corners use only blank padding; text

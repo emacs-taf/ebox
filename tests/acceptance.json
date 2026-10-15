@@ -10,6 +10,16 @@
   ],
   "cases": [
     {
+      "name": "ebox-mount-observer-reports-first-flush-and-validates-before-replace",
+      "file": "tests/ebox-mount-tests.el",
+      "purpose": "Mount-time observation reports the first and subsequent writes, while invalid observer options preserve an existing mount."
+    },
+    {
+      "name": "ebox-backdrop-filter-keeps-overlay-input-and-blocks-underlay",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "Filtered overlays retain their native keymap, hover, help and hit ownership over borrowed background pixels without click-through."
+    },
+    {
       "name": "ebox-focus-reaches-a-stop-scrolled-beneath-a-fixed-region",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "A tab stop scrolled out of a scroller stays focusable although its layout line lies under an unrelated overlay; focus reveals it."
