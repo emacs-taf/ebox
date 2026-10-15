@@ -135,6 +135,13 @@ layout dirt, clears intrinsic caches and, where necessary, marks parent layout
 because flex/grid item facts, outer participation or absolute positioning affect
 the container.
 
+Detaching a subtree clears its computed-style references together with layout,
+viewport dependencies and overlay registrations. Reattachment must revisit the
+whole subtree even when inherited inputs are unchanged: equal cached styles
+alone cannot recreate the cleared overlay hosts or dirty paths. Shared style
+objects remain cached, while node identity, author properties and scroll state
+are preserved.
+
 Viewport-unit dependencies are registered in a weak table.  `ebox-refit` uses
 that table to mark only nodes that actually read `vw` or `vh` when the mounted
 viewport changes.

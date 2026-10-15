@@ -112,6 +112,10 @@ insert/remove damage。
 否则标记 layout dirt、清除 intrinsic cache，并在 flex/grid item facts、outer participation 或 absolute positioning
 影响 container 时标记 parent layout。
 
+摘下子树时，同时清除节点的 computed-style 引用、layout、viewport dependencies 和浮层宿主登记。
+重新接入时必须重新访问整棵子树，即使继承输入没有变化；仅复用相同的缓存 style，无法重建已经清除的浮层宿主和 dirty paths。
+共享 style 对象仍留在缓存中，节点身份、作者属性和滚动状态保持不变。
+
 viewport-unit dependencies 记录在 weak table 中。`ebox-refit` 使用该表，在 mounted viewport 变化时只标记实际读取
 `vw` 或 `vh` 的节点。
 

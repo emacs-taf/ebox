@@ -236,15 +236,19 @@ CHILD may be a string, which becomes a text node."
     child))
 
 (defun ebox--forget-subtree (node)
-  "Clear layout facts of detached NODE so it can be inserted again.
-Overlays in NODE's subtree hosted outside it vacate their host's lines."
+  "Clear mounted style and layout facts of detached NODE for reinsertion.
+Overlays in NODE's subtree hosted outside it vacate their host's lines.
+Computed styles must be revisited after their overlay registrations and
+recorded dirty paths are cleared, even when inherited values stay equal."
   (ebox-node-walk node (lambda (n)
                          (let ((host (ebox-node-host n)))
                            (when (and host (not (ebox-node-ancestor-p node host)))
                              (when (ebox-node-placed n) (ebox--overlay-vacated n))
                              (setf (ebox-node-overlays host)
                                    (delq n (ebox-node-overlays host)))))
-                         (setf (ebox-node-layout n) nil (ebox-node-avail n) nil
+                         (remhash n ebox--viewport-nodes)
+                         (setf (ebox-node-cs n) nil
+                               (ebox-node-layout n) nil (ebox-node-avail n) nil
                                (ebox-node-dkids n) nil (ebox-node-ops n) nil
                                (ebox-node-placed n) nil (ebox-node-host n) nil
                                (ebox-node-overlays n) nil

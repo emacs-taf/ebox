@@ -10,6 +10,11 @@
   ],
   "cases": [
     {
+      "name": "ebox-remounted-subtree-restores-absolute-descendants",
+      "file": "tests/ebox-mount-tests.el",
+      "purpose": "Moving a retained tree into and out of a wrapper preserves its absolute descendants, native positions and subsequent child-list updates."
+    },
+    {
       "name": "ebox-mount-observer-reports-first-flush-and-validates-before-replace",
       "file": "tests/ebox-mount-tests.el",
       "purpose": "Mount-time observation reports the first and subsequent writes, while invalid observer options preserve an existing mount."

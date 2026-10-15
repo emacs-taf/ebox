@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Reattaching a retained subtree restores its absolute descendants and their
+  style context. Closing an in-buffer overlay no longer loses positioned
+  application content or leaves later responsive child updates unstyled.
+
 - Filtered backdrops now keep their own native keymaps, hit ownership,
   pointer and help feedback over the visible background pixels. Outside
   clicks can dismiss the covering modal without activating covered controls.
