@@ -191,6 +191,13 @@ VALUES is (SETTER A B); even samples apply B and odd samples A."
                                   "b 汉字")
                              (box "c") (box "d"))
                       '(1)))
+    ('backdrop
+     (cons `(box :height (lh 2)
+                  (text :color "#ddeeff" :background-color "#445566"
+                        "Content behind the modal")
+                  (box ,@props :position absolute :layer root
+                       :left (px 0) :top (lh 0) :width (ch 30) :height (lh 2)))
+           '(1)))
     ('anchored (cons `(box (box :id "anchor-a" :width (ch 10) "ANCHOR A")
                            (box :id "anchor-b" :width (ch 10) "ANCHOR B")
                            (box ,@(ebox-benchmark--merge
@@ -203,6 +210,7 @@ VALUES is (SETTER A B); even samples apply B and odd samples A."
 (defconst ebox-benchmark--properties
   '((:color text "#ff8800" "#00aaff")
     (:background-color text "#223344" "#443322")
+    (:backdrop-filter backdrop none (brightness 0.55))
     (:font-family text "Menlo" "Monaco")
     (:font-size text 13 16)
     (:font-weight text normal bold)
