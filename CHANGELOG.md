@@ -6,6 +6,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Restyling a retained line keeps its unchanged characters and native markers
+  in place. Local text edits preserve their common prefix and suffix, while
+  native displays and input properties retain the composed objects' identity.
+  Whole-buffer publication inserts composed parts without allocating temporary
+  concatenated lines.
 - Backdrop updates filter only the background spans they actually show and
   apply input ownership on the same owned copy, reducing transient allocation
   during modal search and editing without changing colors or hit isolation.

@@ -290,4 +290,105 @@ B "))
       (should-error (ebox-node-set-text a "not text") :type 'ebox-error)
       (should (ebox-test-buffer-matches-render-p root buffer)))))
 
+(ert-deftest ebox-restyle-preserves-characters-and-interior-markers ()
+  "Restyling several adjacent parts keeps text and native markers in place."
+  (ebox-test-with-mounted
+      (buffer root '(row :width (ch 40)
+                        (text "LEFT")
+                        (row :id "middle" :color "#123456"
+                             (text "甲乙") (text "middle") (text "丙丁"))
+                        (text "RIGHT")))
+    (let* ((middle (car (ebox-selector-query root "#middle")))
+           (text (ebox-test-buffer-text buffer))
+           (tick (buffer-chars-modified-tick))
+           (position (+ (point-min) (string-match "middle" text) 3))
+           (marker (copy-marker position)))
+      (unwind-protect
+          (dolist (color '("#abcdef" "#345678" "#123456"))
+            (ebox-node-put middle :color color)
+            (should (equal (ebox-test-buffer-text buffer) text))
+            (should (= (buffer-chars-modified-tick) tick))
+            (should (= (marker-position marker) position))
+            (should (equal (plist-get (get-text-property position 'face)
+                                      :foreground)
+                           color)))
+        (set-marker marker nil)))))
+
+(ert-deftest ebox-text-update-preserves-common-prefix-and-suffix-markers ()
+  "A local edit leaves markers in its unchanged text and neighbors intact."
+  (ebox-test-with-mounted
+      (buffer root '(row :width (ch 60)
+                        (text "LEFT") (text :id "value" "pre OLD tail")
+                        (text "RIGHT")))
+    (let* ((value (car (ebox-selector-query root "#value")))
+           (start (ebox-node-position value))
+           (prefix (copy-marker (1+ start)))
+           (suffix (copy-marker (+ start 9))))
+      (unwind-protect
+          (dolist (word '("NEWER" "新" "" "OLD"))
+            (ebox-node-set-text value (concat "pre " word " tail"))
+            (should (= (marker-position prefix) (1+ start)))
+            (should (= (char-after prefix) ?r))
+            (should (= (char-after suffix) ?a))
+            (should (= (marker-position suffix) (+ start 6 (length word))))
+            (should (string-prefix-p "LEFTpre " (ebox-test-buffer-text buffer)))
+            (should (string-match-p " tailRIGHT" (ebox-test-buffer-text buffer))))
+        (set-marker prefix nil)
+        (set-marker suffix nil)))))
+
+(ert-deftest ebox-next-publication-repairs-foreign-text-and-properties ()
+  "A changed row is repaired from its tree, not from remembered buffer output."
+  (ebox-test-with-mounted
+      (buffer root '(row :width (ch 40)
+                        (text :color "#123456" "LEFT")
+                        (text :id "value" "old") (text "RIGHT")))
+    (let ((value (car (ebox-selector-query root "#value"))))
+      (dolist (text '("new" "old"))
+        (let ((inhibit-read-only t))
+          (put-text-property (point-min) (+ (point-min) 2) 'face
+                             '(:foreground "#abcdef"))
+          (goto-char (+ (point-min) 2))
+          (insert "foreign"))
+        (ebox-node-set-text value text)
+        (should (string-prefix-p (concat "LEFT" text "RIGHT")
+                                 (ebox-test-buffer-text buffer)))
+        (should (equal (get-text-property (point-min) 'face)
+                       '(:foreground "#123456")))))))
+
+(ert-deftest ebox-property-update-keeps-native-display-and-keymap-identity ()
+  "Property-only writes keep adjacent display twins and the new input objects."
+  (let* ((display (list 'space :width '(4)))
+         (hits 0)
+         (map (ebox-keymap-create :activate (lambda () (cl-incf hits))))
+         (replacement (copy-keymap map)))
+    (ebox-test-with-mounted
+        (buffer root `(row :width (ch 40)
+                           (text ,(propertize "a" 'display display))
+                           (text :id "middle" :keymap ,map :help-echo "old"
+                                 ,(propertize "b" 'display display))
+                           (text ,(propertize "c" 'display display))))
+      (let ((middle (car (ebox-selector-query root "#middle"))))
+        ;; The help change publishes the replacement map even when its
+        ;; bindings compare equal to the earlier map.
+        (ebox-node-set-props middle (list :id "middle" :keymap replacement
+                                          :help-echo "new"))
+        (dotimes (i 2)
+          (should-not (eq (get-text-property (+ (point-min) i) 'display)
+                          (get-text-property (+ (point-min) i 1) 'display))))
+        (should (string-prefix-p "abc" (ebox-test-buffer-text buffer)))
+        (let* ((position (1+ (point-min)))
+               (current-map (get-text-property position 'keymap))
+               (same-map (eq current-map replacement)))
+          (should same-map)
+          (should (equal (get-text-property position 'help-echo) "new"))
+          (ebox-activate position)
+          (should (= hits 1)))
+        (ebox-node-set-props middle '(:id "middle" :keymap nil :help-echo nil))
+        (let* ((position (1+ (point-min)))
+               (retired-map (get-text-property position 'keymap)))
+          (should-not (lookup-key retired-map (kbd "RET")))
+          (should-not (get-text-property position 'help-echo))
+          (ebox-activate position t)
+          (should (= hits 1)))))))
+
 ;;; ebox-update-tests.el ends here

@@ -703,15 +703,15 @@ before LINE would otherwise leave on the inserted text."
           ('start (when (and (window-live-p window) (/= pos (window-start window)))
                     (set-window-start window pos t))))))))
 
-(defun ebox--rewrite-line (line)
-  "Make the buffer line at point read LINE, a string, and end there.
+(defun ebox--rewrite-span (line eol &optional old)
+  "Make the span from point to EOL read LINE, a string, and end there.
+OLD, when supplied, is the string known to occupy that span.
 Only the characters between the common prefix and suffix are replaced and
 only differing property runs are set, so an update that keeps the text
 leaves the characters, and the redisplay work they would cause, alone."
   (let* ((bol (point))
-         (eol (line-end-position))
          (len (length line))
-         (old (buffer-substring-no-properties bol eol))
+         (old (or old (buffer-substring-no-properties bol eol)))
          (olen (length old))
          (same (compare-strings line 0 nil old 0 nil)))
     (unless (eq same t)
@@ -741,8 +741,8 @@ leaves the characters, and the redisplay work they would cause, alone."
 (defun ebox--rewrite-parts (old parts)
   "Make the buffer line at point, written from strings OLD, show PARTS.
 Both are lists of strings in line order.  Strings shared by the two lists at
-either end are already in the buffer; only the characters between them are
-replaced.  Leave point at the end of the line."
+either end are already in the buffer.  Diff only the middle span's characters
+and properties, keeping its unchanged text.  Leave point at the line end."
   (let ((bol (point)) (prefix 0))
     (while (and old parts (eq (car old) (car parts)))
       (setq prefix (+ prefix (length (car old))) old (cdr old) parts (cdr parts)))
@@ -755,12 +755,30 @@ replaced.  Leave point at the end of the line."
             (setq same (1+ same) suffix (+ suffix (length (car a))))
           (setq same 0 suffix 0))
         (setq a (cdr a) b (cdr b)))
-      (when (or (> lo same) (> lp same))
+      (let* ((old-count (- lo same)) (count (- lp same))
+             (aligned (= old-count count))
+             (remaining count) (a old) (b parts))
+        ;; Aligned part boundaries let property-only paint reuse both strings
+        ;; directly. Do not create a concatenated copy of all their intervals.
+        (while (and aligned (> remaining 0))
+          (setq aligned (= (length (car a)) (length (car b)))
+                remaining (1- remaining) a (cdr a) b (cdr b)))
         (goto-char (+ bol prefix))
-        (delete-region (point) (- (line-end-position) suffix))
-        (dotimes (_ (- lp same))
-          (insert (car parts))
-          (setq parts (cdr parts)))))
+        (cond
+         ((or aligned (and (= old-count 1) (= count 1)))
+          (dotimes (_ count)
+            (let ((end (+ (point) (length (car old)))))
+              (if (eq (car old) (car parts))
+                  (goto-char end)
+                (ebox--rewrite-span (car parts) end (car old))))
+            (setq old (cdr old) parts (cdr parts))))
+         ((or (> old-count 0) (> count 0))
+          (ebox--rewrite-span
+           (pcase count
+             (0 "")
+             (1 (car parts))
+             (_ (apply #'concat (cl-subseq parts 0 count))))
+           (- (line-end-position) suffix))))))
     (end-of-line)))
 
 (defun ebox--write-line (mount line parts)
@@ -769,7 +787,7 @@ replaced.  Leave point at the end of the line."
          (old (gethash line written)))
     (if old
         (ebox--rewrite-parts old parts)
-      (ebox--rewrite-line (apply #'concat parts)))
+      (ebox--rewrite-span (apply #'concat parts) (line-end-position)))
     (when (or old (< (hash-table-count written) ebox--written-max))
       (puthash line parts written))))
 
@@ -905,11 +923,17 @@ every row an interactive element spans."
       (let ((i 0))
         (while (< i height)
           (when (> i 0) (insert "\n"))
-          (insert (ebox--root-line root i))
+          (let ((parts (ebox--root-parts root i)))
+            (apply #'insert parts)
+            ;; Do not let the first rows of a large mount occupy every slot:
+            ;; its remembered lines should follow subsequent local damage.
+            (when (<= height ebox--written-max)
+              (puthash i parts (ebox-mount-written mount))))
           (setq i (1+ i)))))
     (setf (ebox-mount-lines mount) height)
     (ebox--rebuild-anchors mount)
     (ebox--writing (save-excursion (ebox--extend-line-ends mount 0 height)))
+    (setf (ebox-mount-tick mount) (buffer-modified-tick))
     (if tracked
         (ebox--restore-positions mount tracked nil)
       (goto-char (point-min)))))

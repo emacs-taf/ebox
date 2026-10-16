@@ -10,6 +10,26 @@
   ],
   "cases": [
     {
+      "name": "ebox-next-publication-repairs-foreign-text-and-properties",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "After initial and incremental publication, foreign text and property edits in a subsequently changed row are repaired from the retained tree."
+    },
+    {
+      "name": "ebox-restyle-preserves-characters-and-interior-markers",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Restyling adjacent parts updates their faces without changing buffer characters or moving native markers inside unchanged text."
+    },
+    {
+      "name": "ebox-text-update-preserves-common-prefix-and-suffix-markers",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Growing and shrinking a local text value preserves native markers in its common prefix and suffix and keeps neighboring content."
+    },
+    {
+      "name": "ebox-property-update-keeps-native-display-and-keymap-identity",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Property updates retain separate adjacent native displays, publish the replacement keymap by identity and remove retired input properties."
+    },
+    {
       "name": "ebox-remounted-subtree-restores-absolute-descendants",
       "file": "tests/ebox-mount-tests.el",
       "purpose": "Moving a retained tree into and out of a wrapper preserves its absolute descendants, native positions and subsequent child-list updates."

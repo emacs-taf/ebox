@@ -262,8 +262,11 @@ own their source bytes; composing a variant never performs source I/O.
 
 ## Buffer writes
 
-The first mount flush erases and writes the full root.  Later flushes compute
-root-line edits from damage records.  Each edit is `(START OLD NEW)`, where
+The first mount flush erases and writes the full root, inserting composed parts
+directly instead of allocating concatenated lines. A root that fits the existing
+remembered-parts bound fills that table and records the resulting buffer tick.
+Larger mounts leave its slots for subsequently damaged rows, so early static rows
+do not evict the working set of local updates. Later flushes compute root-line edits from damage records.  Each edit is `(START OLD NEW)`, where
 `START` is in post-layout line coordinates after preceding edits.
 
 Line anchors every 128 lines let Ebox find edit starts without keeping one marker
@@ -271,11 +274,17 @@ per line.  Point and window starts inside rewritten ranges are tracked by line
 and column, then restored after the write.
 
 For a changed line, `ebox--write-line` uses the mount's remembered part list.
-`ebox--rewrite-parts` removes equal shared string objects at the front and back
-and replaces only the middle.  If no remembered parts are available, Ebox falls
-back to `ebox--rewrite-line`, which compares characters by prefix/suffix and
-sets only changed property runs.  A foreign buffer edit invalidates remembered
-parts by buffer tick and the next flush recomputes safely from the retained tree.
+`ebox--rewrite-parts` skips identical shared string objects at the front and back.
+Only the remaining span goes through `ebox--rewrite-span`: it keeps the common
+character prefix and suffix and sets only changed property runs. A single changed
+part, or multiple parts with aligned character boundaries, use the remembered
+strings directly without concatenation or buffer-text copies; identical interior
+parts also skip writing. Shared ends are neither copied nor compared by value.
+Without remembered parts the same span writer handles the whole line. Faces compare
+by value, while displays, keymaps and callback-bearing values keep their composed
+object identity. Property-only changes leave characters and their native markers
+in place. A foreign buffer edit invalidates remembered parts by buffer tick and
+the next flush recomputes safely from the retained tree.
 
 Mounted buffers disable native line continuation: Ebox has already wrapped
 and positioned each row. A second wrapping pass would reserve a continuation

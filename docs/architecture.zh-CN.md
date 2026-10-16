@@ -186,16 +186,21 @@ prepared 图像已经拥有来源字节，合成变体不做来源 I/O。
 
 ## Buffer 写入
 
-第一次 mount flush 会 erase 并写入完整 root。后续 flush 从 damage records 计算 root-line edits。每个 edit 是
+第一次 mount flush 会 erase 并写入完整 root，直接插入合成片段，不分配拼接整行；
+完整 root 未超过既有 remembered-parts 上限时填充同一张表，并记录写入后的 buffer tick。
+更大的 mount 把槽位留给后续发生变化的行，避免开头的静态行挤占局部更新的工作集。
+后续 flush 从 damage records 计算 root-line edits。每个 edit 是
 `(START OLD NEW)`，其中 `START` 使用 preceding edits 后的 post-layout line 坐标。
 
 每 128 行一个 line anchor，使 Ebox 无需为每一行保留 marker 也能定位 edit start。被重写范围内的 point 与 window start
 按 line 和 column 记录，写入后再恢复。
 
-对 changed line，`ebox--write-line` 使用 mount 记忆的 part list。`ebox--rewrite-parts` 去掉前后相等共享 string 对象，
-只替换中间部分。如果没有可用 remembered parts，Ebox 回退到 `ebox--rewrite-line`：按 prefix/suffix 比较字符，只设置
-变化的 property runs。外部 buffer edit 会通过 buffer tick 使 remembered parts 失效；下一次 flush 从 retained tree
-安全重算。
+对 changed line，`ebox--write-line` 使用 mount 记忆的 part list。`ebox--rewrite-parts` 跳过前后同一共享 string 对象，
+只把中间变化区间交给 `ebox--rewrite-span`：保留公共字符前后缀，只设置变化的 property runs。
+单个变化片段或字符边界对齐的多个片段直接使用 remembered strings，无需拼接或复制 buffer 文本；
+内部同一共享片段也跳过写入。共享两端既不复制也不按值比较。没有 remembered parts 时，同一写入器处理整行。
+face 按值比较，display、keymap 和带回调的值则保留合成结果的对象身份。只改属性不会删除字符或移动其原生 marker。
+外部 buffer edit 会通过 buffer tick 使 remembered parts 失效；下一次 flush 从 retained tree 安全重算。
 
 挂载期间禁用 Emacs 原生续行，因为 Ebox 已完成每行的折行和定位。再次原生折行会预留续行列，
 并可能在右侧露出不属于应用的背景色条。卸载后恢复 buffer 原有的折行设置。
