@@ -101,7 +101,7 @@ The returned plist belongs to the measuring layer and must not be changed."
                                                      (propertize "0" 'face face)) frame)))
                                  (height (max 1 (aref info 3)))
                                  (ascent (aref info 8)))
-                            (list :char-width (max 1 (string-pixel-width "0" buffer))
+                            (list :char-width (max 1 (ebox--string-pixel-width-in "0" buffer))
                                   :line-height height
                                   :ascent (min 100 (max 1 (ceiling (* 100.0 ascent) height)))))))))))
       (cdr ebox--display-metrics-cache))))
@@ -183,9 +183,21 @@ redisplay per flush."
       (when (zerop (window-old-pixel-width window))
         (redisplay t)))))
 
+(defconst ebox--string-pixel-width-accepts-buffer
+  (>= (cdr (func-arity #'string-pixel-width)) 2)
+  "Non-nil when `string-pixel-width' takes a BUFFER argument (Emacs 30+).")
+
+(defun ebox--string-pixel-width-in (string buffer)
+  "Return the pixel width of STRING measured in BUFFER.
+Emacs 30 added a BUFFER argument to `string-pixel-width'; older versions
+measure in the current buffer, so switch into BUFFER first."
+  (if ebox--string-pixel-width-accepts-buffer
+      (string-pixel-width string buffer)
+    (with-current-buffer buffer (string-pixel-width string))))
+
 (defun ebox--measure-raw (string)
   "Measure STRING with `string-pixel-width' in the measuring buffer."
-  (string-pixel-width string (or ebox--measure-buffer (current-buffer))))
+  (ebox--string-pixel-width-in string (or ebox--measure-buffer (current-buffer))))
 
 (defun ebox--char-width (char face)
   "Return the pixel width of CHAR displayed with FACE."

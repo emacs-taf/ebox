@@ -85,17 +85,21 @@
   "A mounted buffer cannot wrap engine rows again; unmount restores its policy."
   (dolist (initial '(inherit nil t))
     (with-temp-buffer
-      (let ((truncate-lines nil))
-        (unless (eq initial 'inherit) (setq-local truncate-lines initial))
-        (let ((was-local (local-variable-p 'truncate-lines))
-              (before truncate-lines))
-          (ebox-mount (current-buffer) '(box :width (px 400) "Already laid out")
-                      :width 400 :height 2)
-          (should truncate-lines)
-          (should (local-variable-p 'truncate-lines))
-          (ebox-unmount-buffer (current-buffer))
-          (should (eq before truncate-lines))
-          (should (eq was-local (local-variable-p 'truncate-lines))))))))
+      ;; `truncate-lines' is automatically buffer-local: setting it creates
+      ;; the local binding on both Emacs 29 and 30+, unlike the let-binding
+      ;; plus `make-local-variable' combination whose interaction changed in
+      ;; Emacs 30.
+      (unless (eq initial 'inherit)
+        (setq-local truncate-lines initial))
+      (let ((was-local (local-variable-p 'truncate-lines))
+            (before truncate-lines))
+        (ebox-mount (current-buffer) '(box :width (px 400) "Already laid out")
+                    :width 400 :height 2)
+        (should truncate-lines)
+        (should (local-variable-p 'truncate-lines))
+        (ebox-unmount-buffer (current-buffer))
+        (should (eq before truncate-lines))
+        (should (eq was-local (local-variable-p 'truncate-lines)))))))
 
 (ert-deftest ebox-buffer-background-follows-root-background ()
   (let ((buffer (get-buffer-create " *ebox-canvas*")))
