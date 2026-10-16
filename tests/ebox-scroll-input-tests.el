@@ -298,23 +298,24 @@ keyboard macros reach it."
 (defvar ns-working-text)
 
 (ert-deftest ebox-input-session-shows-input-method-preedit-in-layout ()
-  (ebox-test-with-session (buffer root '(column (box :width (ch 6) (text :id "field" "ab"))
-                                                (text "end"))
-                                  session)
-    ;; Emacs runs input-method events from `special-event-map' outside the
-    ;; command loop.
-    (let ((ns-working-text "pinyin"))
-      (call-interactively (lookup-key special-event-map [ns-put-working-text])))
-    ;; The working text reflows inside the field instead of overflowing it.
-    (should (equal (ebox-test-buffer-text buffer) "abpiny \nin  \nend "))
-    (should (equal (ebox-input-text session) "ab"))
-    (call-interactively (lookup-key special-event-map [ns-unput-working-text]))
-    (execute-kbd-macro "拼")
-    (should (equal (ebox-input-text session) "ab拼"))
-    (should (equal (ebox-test-buffer-text buffer) "ab拼  \nend "))
-    (ebox-input-end session)
-    (should (eq (lookup-key special-event-map [ns-put-working-text])
-                (and (fboundp 'ns-put-working-text) 'ns-put-working-text)))))
+  (let ((native (lookup-key special-event-map [ns-put-working-text])))
+    (ebox-test-with-session (buffer root '(column (box :width (ch 6) (text :id "field" "ab"))
+                                                  (text "end"))
+                                    session)
+      ;; Emacs runs input-method events from `special-event-map' outside the
+      ;; command loop.
+      (let ((ns-working-text "pinyin"))
+        (call-interactively (lookup-key special-event-map [ns-put-working-text])))
+      ;; The working text reflows inside the field instead of overflowing it.
+      (should (equal (ebox-test-buffer-text buffer) "abpiny \nin  \nend "))
+      (should (equal (ebox-input-text session) "ab"))
+      (call-interactively (lookup-key special-event-map [ns-unput-working-text]))
+      (execute-kbd-macro "拼")
+      (should (equal (ebox-input-text session) "ab拼"))
+      (should (equal (ebox-test-buffer-text buffer) "ab拼  \nend "))
+      (ebox-input-end session)
+      ;; Ending the last session restores the binding Emacs had before.
+      (should (eq (lookup-key special-event-map [ns-put-working-text]) native)))))
 
 (ert-deftest ebox-input-session-follows-external-text ()
   (ebox-test-with-session (buffer root '(column (text :id "field" "abc")) session)
