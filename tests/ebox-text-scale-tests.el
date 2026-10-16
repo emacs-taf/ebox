@@ -10,15 +10,6 @@
       (sleep-for 0.01))
     (funcall predicate)))
 
-(defun ebox-test-string-width (string &optional buffer)
-  "Native pixel width of STRING, measured in BUFFER when given.
-Emacs 30 added the BUFFER argument to `string-pixel-width'; on older
-Emacsen measure inside BUFFER explicitly."
-  (if (>= (cdr (func-arity #'string-pixel-width)) 2)
-      (string-pixel-width string buffer)
-    (with-current-buffer (or buffer (current-buffer))
-      (string-pixel-width string))))
-
 (ert-deftest ebox-text-scale-change-relayouts-its-mount-once ()
   "A burst publishes one settled display without replacing the tree."
   (ebox-test-with-mounted (buffer root '(box :width (ch 5) "00000") :width 400 :height 10)
@@ -35,7 +26,7 @@ Emacsen measure inside BUFFER explicitly."
             (should (= (length seen) 1))
             (let ((same (eq root (ebox-buffer-root buffer)))
                   (width (plist-get (ebox-node-geometry root) :width))
-                  (expected (ebox-test-string-width "00000" buffer)))
+                  (expected (ebox-test-native-width "00000" buffer)))
               (should same)
               (should (= width expected)))
             ;; A fixed viewport still receives metric changes and reset.
@@ -64,8 +55,8 @@ Emacsen measure inside BUFFER explicitly."
                 (ebox-node-set-text (car (ebox-node-children root)) "22222")
                 (let ((own-width (plist-get (ebox-node-geometry root) :width))
                       (other-width (plist-get (ebox-node-geometry other-root) :width))
-                      (expected (ebox-test-string-width "00000" buffer))
-                      (other-expected (ebox-test-string-width "00000" other)))
+                      (expected (ebox-test-native-width "00000" buffer))
+                      (other-expected (ebox-test-native-width "00000" other)))
                   (should (= own-width expected))
                   (should (= other-width other-expected)))))
           (remove-hook 'ebox-display-change-functions hook))))))
@@ -97,7 +88,7 @@ Emacsen measure inside BUFFER explicitly."
     (dolist (scale '(0 2 -2 0))
       (text-scale-set scale)
       (let* ((metrics (ebox-display-metrics))
-             (expected (ebox-test-string-width "0" (current-buffer))))
+             (expected (ebox-test-native-width "0" (current-buffer))))
         (should (= (plist-get metrics :char-width) expected))
         (should (> (plist-get metrics :line-height) 0))
         (should (<= 1 (plist-get metrics :ascent) 100))

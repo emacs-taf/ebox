@@ -4,6 +4,15 @@
 (require 'cl-lib)
 (require 'ebox)
 
+(defun ebox-test-native-width (string buffer)
+  "Return STRING's width measured by Emacs with BUFFER's face remapping.
+This is the oracle for Ebox measurement on every supported Emacs version."
+  (let ((remap (buffer-local-value 'face-remapping-alist buffer)))
+    (with-temp-buffer
+      (setq-local face-remapping-alist remap)
+      (insert string)
+      (car (buffer-text-pixel-size nil nil t)))))
+
 (defmacro ebox-test-with-mounted (spec &rest body)
   "Mount SPEC's input in a new buffer, bind its root, run BODY, then clean up.
 SPEC has the form (BUFFER ROOT INPUT &rest OPTIONS)."

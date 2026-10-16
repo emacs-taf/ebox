@@ -6,6 +6,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Text measurement works on Emacs 29 and 30, where `string-pixel-width`
+  accepts no buffer.  Ebox measures in a work buffer that copies the
+  measuring buffer's face remapping and default text properties, so text
+  scaling selects the same widths as on Emacs 31.
+
 - Optional native image and font calls no longer produce undeclared-function
   warnings on text-only Emacs builds. Wheel events outside a mounted Ebox
   buffer load the standard mouse-wheel library for their fallback handler.
@@ -36,12 +41,6 @@ All notable changes to Ebox are documented here.
   Other native formats stay visible without pixel filtering.
 - Removing and reattaching the same overlay at unchanged coordinates now
   repaints it instead of retaining the uncovered background.
-
-- Measurement keeps working on Emacs 29: `string-pixel-width' gained its
-  buffer argument in Emacs 30, so Ebox now wraps it and measures inside the
-  target buffer instead of passing the argument straight through.  Emacs 29
-  previously signalled `wrong-number-of-arguments' from every layout that
-  measured text.
 
 - Reattaching a retained subtree restores its absolute descendants and their
   style context. Closing an in-buffer overlay no longer loses positioned

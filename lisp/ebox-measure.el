@@ -5,6 +5,8 @@
 ;; measured once per font face and cached; grapheme clusters, display
 ;; properties and caller faces fall back to `string-pixel-width'.  The
 ;; measuring buffer's face remapping (including text scale) selects the cache.
+;; Emacs 31 measures a string for a buffer natively; Emacs 29 and 30 copy the
+;; same buffer-local display settings into a private work buffer.
 
 ;;; Code:
 
@@ -103,7 +105,8 @@ The returned plist belongs to the measuring layer and must not be changed."
                                                      (propertize "0" 'face face)) frame)))
                                  (height (max 1 (aref info 3)))
                                  (ascent (aref info 8)))
-                            (list :char-width (max 1 (ebox--string-pixel-width-in "0" buffer))
+                            (list :char-width (max 1 (ebox--buffer-string-pixel-width
+                                                      "0" buffer))
                                   :line-height height
                                   :ascent (min 100 (max 1 (ceiling (* 100.0 ascent) height)))))))))))
       (cdr ebox--display-metrics-cache))))
@@ -185,21 +188,50 @@ redisplay per flush."
       (when (zerop (window-old-pixel-width window))
         (redisplay t)))))
 
-(defconst ebox--string-pixel-width-accepts-buffer
-  (>= (cdr (func-arity #'string-pixel-width)) 2)
-  "Non-nil when `string-pixel-width' takes a BUFFER argument (Emacs 30+).")
+(defconst ebox--native-buffer-pixel-width
+  (let ((max (cdr (func-arity 'string-pixel-width))))
+    (or (eq max 'many) (>= max 2)))
+  "Non-nil when `string-pixel-width' accepts a BUFFER (Emacs 31 and later).")
 
-(defun ebox--string-pixel-width-in (string buffer)
-  "Return the pixel width of STRING measured in BUFFER.
-Emacs 30 added a BUFFER argument to `string-pixel-width'; older versions
-measure in the current buffer, so switch into BUFFER first."
-  (if ebox--string-pixel-width-accepts-buffer
-      (string-pixel-width string buffer)
-    (with-current-buffer buffer (string-pixel-width string))))
+(defconst ebox--pixel-width-locals
+  '(face-remapping-alist char-property-alias-alist default-text-properties)
+  "Buffer-local variables that select glyphs when measuring for a buffer.")
+
+(defun ebox--buffer-string-pixel-width (string buffer)
+  "Return the pixel width of STRING displayed in BUFFER.
+BUFFER's face remapping, property aliases and default text properties apply,
+as `string-pixel-width' applies them in Emacs 31."
+  (cond
+   (ebox--native-buffer-pixel-width
+    ;; The older byte compiler sees this unreachable Emacs 31 arity; the
+    ;; capability check above selects it only where that argument exists.
+    (with-suppressed-warnings ((callargs string-pixel-width))
+      (string-pixel-width string buffer)))
+   ((zerop (length string)) 0)
+   (t
+    (let ((locals (delq nil (mapcar (lambda (variable)
+                                      (and (local-variable-p variable buffer)
+                                           (cons variable
+                                                 (buffer-local-value
+                                                  variable buffer))))
+                                    ebox--pixel-width-locals))))
+      (with-current-buffer (get-buffer-create " *ebox-pixel-width*")
+        (dolist (variable ebox--pixel-width-locals)
+          (kill-local-variable variable))
+        (pcase-dolist (`(,variable . ,value) locals)
+          (set (make-local-variable variable) value))
+        (setq-local display-line-numbers nil)
+        (let ((inhibit-read-only t) deactivate-mark)
+          (erase-buffer)
+          (insert string)
+          (add-text-properties (point-min) (point-max)
+                               '(line-prefix "" wrap-prefix "")))
+        (car (buffer-text-pixel-size nil nil t)))))))
 
 (defun ebox--measure-raw (string)
   "Measure STRING with `string-pixel-width' in the measuring buffer."
-  (ebox--string-pixel-width-in string (or ebox--measure-buffer (current-buffer))))
+  (ebox--buffer-string-pixel-width
+   string (or ebox--measure-buffer (current-buffer))))
 
 (defun ebox--char-width (char face)
   "Return the pixel width of CHAR displayed with FACE."
