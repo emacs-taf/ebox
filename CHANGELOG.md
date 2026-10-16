@@ -35,6 +35,9 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- `ebox-focus-edge` accepts an optional subtree root, keeping Home/End-style
+  focus movement and participating focus groups inside a caller's boundary.
+
 - `ebox-mount` accepts an `:observer` installed before its first flush, so
   root replacement can keep complete paint timing and update reports.
 

@@ -6,6 +6,8 @@ Ebox 的重要变化记录在这里。
 
 ### 新增
 
+- `ebox-focus-edge` 接受可选子树根，把 Home/End 式焦点移动及参与的焦点组限制在调用方指定的边界内。
+
 - 键盘焦点支持复合控件：`:focus-group`（`vertical`、`horizontal` 或 `grid`）使容器
   成为一个 Tab 停靠点，进入时落在选中或上次聚焦的成员上，并用方向键在内部移动；
   `:focus-scope modal` 把导航限制在打开的对话框内；`ebox-focus-direction` 移到某方向上

@@ -442,10 +442,12 @@
 ;; and a group participates only when it lies inside ROOT, so a caller can
 ;; keep navigation inside a named area and detect its boundary.
 ;;
-;; Function: ebox-focus-edge (last &optional buffer-or-name)
+;; Function: ebox-focus-edge (last &optional buffer-or-name root)
 ;;;###autoload (autoload 'ebox-focus-edge "ebox" nil nil)
 ;; Focus the first member of the focused node's group, or the LAST one;
 ;; outside a group, the first or LAST stop of the modal scope.
+;; ROOT restricts candidates and participating groups to its subtree, as
+;; with `ebox-focus-direction'.  A root outside the mount signals `user-error'.
 ;;
 ;; Function: ebox-focus-scope (&optional buffer-or-name)
 ;;;###autoload (autoload 'ebox-focus-scope "ebox" nil nil)

@@ -105,6 +105,37 @@
       (should-error (ebox-focus-within group 1 nil buffer) :type 'user-error)
       (should (eq (ebox-focused-node buffer) b)))))
 
+(ert-deftest ebox-focus-edge-respects-explicit-root-and-inner-groups ()
+  "A subtree edge never selects a sibling or an enclosing group's member."
+  (ebox-test-with-mounted (buffer root
+                           '(column :focus-group vertical
+                                    (box :id "outside" :tab-index 0 "Outside")
+                                    (column :id "scope" :tab-index -1
+                                            "Scope"
+                                            (box :id "a" :tab-index 0 "A")
+                                            (column :focus-group vertical
+                                                    (box :id "b" :tab-index 0 "B")
+                                                    (box :id "c" :tab-index 0 "C"))
+                                            (box :id "d" :tab-index 0 "D")))
+                           :width 200 :height 10)
+    (let ((scope (car (ebox-selector-query root "#scope"))))
+      (ebox-focus (car (ebox-selector-query root "#a")) buffer)
+      (let ((end (ebox-focus-edge t buffer scope)))
+        (should (equal (ebox-node-id end) "d")))
+      (let ((start (ebox-focus-edge nil buffer scope)))
+        (should (equal (ebox-node-id start) "a")))
+      (ebox-focus (car (ebox-selector-query root "#b")) buffer)
+      (let ((end (ebox-focus-edge t buffer scope)))
+        (should (equal (ebox-node-id end) "c")))
+      (ebox-focus (car (ebox-selector-query root "#outside")) buffer)
+      (let ((start (ebox-focus-edge nil buffer scope)))
+        (should (equal (ebox-node-id start) "a")))
+      (ebox-focus scope buffer)
+      (let ((start (ebox-focus-edge nil buffer scope)))
+        (should (equal (ebox-node-id start) "a")))
+      (let ((detached (ebox-node-create 'box)))
+        (should-error (ebox-focus-edge nil buffer detached) :type 'user-error)))))
+
 (defun ebox-test--node (root id)
   "Return ROOT's node with ID."
   (car (ebox-selector-query root (concat "#" id))))

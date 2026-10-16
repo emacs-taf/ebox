@@ -10,6 +10,11 @@
   ],
   "cases": [
     {
+      "name": "ebox-focus-edge-respects-explicit-root-and-inner-groups",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Explicit edge-navigation roots contain candidates and groups, work when focus starts outside, and reject detached roots."
+    },
+    {
       "name": "ebox-remounted-subtree-restores-absolute-descendants",
       "file": "tests/ebox-mount-tests.el",
       "purpose": "Moving a retained tree into and out of a wrapper preserves its absolute descendants, native positions and subsequent child-list updates."
