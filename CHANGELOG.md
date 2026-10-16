@@ -14,6 +14,12 @@ All notable changes to Ebox are documented here.
 - Removing and reattaching the same overlay at unchanged coordinates now
   repaints it instead of retaining the uncovered background.
 
+- Measurement keeps working on Emacs 29: `string-pixel-width' gained its
+  buffer argument in Emacs 30, so Ebox now wraps it and measures inside the
+  target buffer instead of passing the argument straight through.  Emacs 29
+  previously signalled `wrong-number-of-arguments' from every layout that
+  measured text.
+
 - Reattaching a retained subtree restores its absolute descendants and their
   style context. Closing an in-buffer overlay no longer loses positioned
   application content or leaves later responsive child updates unstyled.
