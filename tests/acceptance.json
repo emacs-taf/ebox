@@ -415,6 +415,11 @@
       "purpose": "Hidden boxes suppress ink while preserving layout space in the rendered buffer."
     },
     {
+      "name": "ebox-backdrop-identity-preserves-partially-covered-glyphs",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "A uniform identity-filtered hit strip preserves whole straddling text glyphs, owns native activation, and restores underlying input after moving or hiding."
+    },
+    {
       "name": "ebox-backdrop-filter-keeps-text-and-dims-colors",
       "file": "tests/ebox-backdrop-filter-tests.el",
       "purpose": "A filtered overlay keeps covered text visible and dims its foreground and background colors."

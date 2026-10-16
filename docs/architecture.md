@@ -243,6 +243,10 @@ splices need no remeasurement.  An overlay line without a border stays a part
 list, so moving an overlay costs its covered lines times their part count.
 
 Filtered overlays borrow the underlying paint but replace its input decoration.
+A blank identity-filtered surface with uniform input ownership expands a cut
+through an unsliceable text unit to that unit's boundaries. It preserves the
+whole glyph and uses native whole-cell input ownership instead of replacing
+partial text with spaces; image and display-space cuts stay pixel-exact.
 Text filtering flattens inherited face lists and resolves canvas-remapped default
 colors. PNG, JPEG and SVG data descriptors use an in-memory SVG component-transfer
 composite, with sRGB channels multiplied while alpha stays unchanged. Raster

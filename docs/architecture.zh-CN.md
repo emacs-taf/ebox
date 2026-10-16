@@ -173,7 +173,7 @@ overlay 拼接进它覆盖的行时不做字符串连接。`ebox--split-parts` �
 `ebox--part-widths` 中，后续拼接无需重新测量。没有边框的 overlay 行保持为 part list，
 因此移动 overlay 的成本是覆盖行数乘以各行的 part 数。
 
-带滤镜的 overlay 借用下层绘制，但替换其输入装饰。文本滤镜展平嵌套继承 face，并读取画布 remap 后的默认颜色。
+带滤镜的 overlay 借用下层绘制，但替换其输入装饰。输入归属一致的空白恒等滤镜表面遇到不可切片的文字单元时，将截断边界扩展到整个字形；文字保持完整，输入按原生整格归属，而不是把部分文字换成空格。图像与 display space 仍精确到像素切片。文本滤镜展平嵌套继承 face，并读取画布 remap 后的默认颜色。
 PNG、JPEG 与 SVG 的 data 描述符使用内存 SVG component-transfer 合成：在 sRGB 中乘颜色通道，不改变 alpha。
 栅格字节以内嵌图像绘制；SVG 内容保留为矢量，而不是低分辨率的嵌套图片。
 SVG 根的 `currentColor` 使用原生前景色，透明像素使用滤镜后的背景色。
