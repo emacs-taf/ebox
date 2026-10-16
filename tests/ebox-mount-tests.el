@@ -1,5 +1,5 @@
 ;;; -*- lexical-binding: t; -*-
-;;; ebox-mount-tests.el --- Public mount-time observer acceptance
+;;; ebox-mount-tests.el --- Public mount and publication acceptance
 
 (require 'ert)
 (require 'ebox)
@@ -56,5 +56,88 @@
       (let ((text (buffer-substring-no-properties (point-min) (point-max))))
         (should (string-match-p "After" text))
         (should-not (string-match-p "Before" text))))))
+
+(ert-deftest ebox-remount-handles-empty-growing-and-shrinking-content ()
+  "Full publication owns every old row, including an empty last row."
+  (with-temp-buffer
+    (dolist (old '("" "\n" "foreign\n" "foreign\nextra\nrows"))
+      (ebox-unmount-buffer)
+      (erase-buffer)
+      (insert old)
+      (dolist (form '((column (text "One") (text "Two"))
+                      (column)
+                      (column (text "One"))
+                      (column (text "One") (text "Two") (text "Three"))
+                      (text "")
+                      (column :height (lh 3))
+                      (column (text "Last"))))
+        (let* ((ebox-viewport-width 300)
+               (ebox-viewport-height 10)
+               (expected (substring-no-properties (ebox-render form))))
+          (ebox-mount (current-buffer) form :width 300 :height 10)
+          (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+            (should (equal text expected))))))))
+
+(ert-deftest ebox-remount-repairs-foreign-rows-and-retired-newline-properties ()
+  "Foreign structure and input properties cannot survive a whole publication."
+  (with-temp-buffer
+    (let* ((rows (cl-loop for i below 600 collect
+                          (ebox-text-create (format "Row%03d" i))))
+           (root (ebox-node-create 'column nil rows))
+           (map (ebox-keymap-create :activate #'ignore))
+           expected)
+      (ebox-mount (current-buffer) root :width 300 :height 650)
+      (setq expected (buffer-substring-no-properties (point-min) (point-max)))
+      (goto-char (point-min))
+      (insert "foreign\nrows\n")
+      (forward-line 130)
+      (delete-region (point) (progn (forward-line 5) (point)))
+      (goto-char (point-max))
+      (insert "\nforeign\n")
+      (put-text-property (point-min) (point-max) 'keymap map)
+      (put-text-property (point-min) (point-max) 'display '(space :width (7)))
+      (ebox-mount (current-buffer) root :width 300 :height 650)
+      (let ((matches (equal expected (buffer-substring-no-properties (point-min) (point-max)))))
+        (should matches))
+      (goto-char (point-min))
+      (end-of-line)
+      (should-not (get-text-property (point) 'keymap))
+      (should-not (get-text-property (point) 'display))
+      (ebox-node-set-text (nth 590 rows) "Changed590")
+      (goto-char (point-min))
+      (forward-line 590)
+      (should (equal (string-trim (buffer-substring-no-properties (point) (line-end-position)))
+                     "Changed590"))
+      (forward-line 1)
+      (should (equal (string-trim (buffer-substring-no-properties (point) (line-end-position)))
+                     "Row591")))))
+
+(ert-deftest ebox-remount-widens-and-resets-all-displaying-windows ()
+  "Replacing an existing buffer still owns it all and starts its windows at top."
+  (let ((buffer (generate-new-buffer " *ebox-remount-windows*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((first (selected-window))
+                (second (split-window-below))
+                (form `(column ,@(cl-loop for i below 40 collect `(text ,(format "Row%02d" i))))))
+            (set-window-buffer first buffer)
+            (set-window-buffer second buffer)
+            (with-current-buffer buffer
+              (ebox-mount buffer form :width 300 :height 50)
+              (goto-char (point-min))
+              (forward-line 10)
+              (set-window-start first (point) t)
+              (set-window-start second (point) t)
+              (set-window-point second (+ (point) 2))
+              (narrow-to-region (point) (point-max))
+              (goto-char (point-max))
+              (ebox-mount buffer form :width 300 :height 50)
+              (should-not (buffer-narrowed-p))
+              (should (= (point) (point-min)))
+              (dolist (window (list first second))
+                (should (= (window-start window) (point-min)))
+                (should (= (window-point window) (point-min)))))))
+      (kill-buffer buffer))))
 
 (provide 'ebox-mount-tests)

@@ -6,6 +6,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Mounting a previously laid-out tree replaces the whole destination buffer,
+  even if foreign edits changed its row count. Old line coordinates and
+  newline input properties no longer leak into the new mount.
 - Restyling a retained line keeps its unchanged characters and native markers
   in place. Local text edits preserve their common prefix and suffix, while
   native displays and input properties retain the composed objects' identity.

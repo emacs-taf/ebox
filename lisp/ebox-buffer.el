@@ -987,7 +987,10 @@ every row an interactive element spans."
          (ebox--vh (ebox-mount-vh mount))
          (ebox--damage (ebox-mount-report mount))
          (ebox--record t)
-         (fresh (null (ebox-node-layout root)))
+         ;; A reused tree may already have layout, but a new mount owns no
+         ;; previous buffer generation or line coordinates to apply edits to.
+         (fresh (or (zerop (ebox-mount-flushes mount))
+                    (null (ebox-node-layout root))))
          (observer (ebox-mount-observer mount))
          (start (and observer (float-time))))
     (setf (ebox-mount-report mount) nil)

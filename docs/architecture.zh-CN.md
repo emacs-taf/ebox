@@ -186,7 +186,7 @@ prepared 图像已经拥有来源字节，合成变体不做来源 I/O。
 
 ## Buffer 写入
 
-第一次 mount flush 会 erase 并写入完整 root，直接插入合成片段，不分配拼接整行；
+每个 mount 的第一次 flush 都会 erase 并写入完整 root，即使 root 已有独立渲染或此前挂载留下的 layout：只有当前 mount 已完成的发布才建立 buffer 行坐标。写入直接插入合成片段，不分配拼接整行；
 完整 root 未超过既有 remembered-parts 上限时填充同一张表，并记录写入后的 buffer tick。
 更大的 mount 把槽位留给后续发生变化的行，避免开头的静态行挤占局部更新的工作集。
 后续 flush 从 damage records 计算 root-line edits。每个 edit 是

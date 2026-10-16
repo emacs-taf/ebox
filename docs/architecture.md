@@ -262,8 +262,10 @@ own their source bytes; composing a variant never performs source I/O.
 
 ## Buffer writes
 
-The first mount flush erases and writes the full root, inserting composed parts
-directly instead of allocating concatenated lines. A root that fits the existing
+The first flush of each mount erases and writes the full root, even when that
+root already has layout from rendering or a previous mount: only the current
+mount's prior publications establish buffer line coordinates. It inserts
+composed parts directly instead of allocating concatenated lines. A root that fits the existing
 remembered-parts bound fills that table and records the resulting buffer tick.
 Larger mounts leave its slots for subsequently damaged rows, so early static rows
 do not evict the working set of local updates. Later flushes compute root-line edits from damage records.  Each edit is `(START OLD NEW)`, where

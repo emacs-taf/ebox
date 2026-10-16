@@ -10,6 +10,21 @@
   ],
   "cases": [
     {
+      "name": "ebox-remount-handles-empty-growing-and-shrinking-content",
+      "file": "tests/ebox-mount-tests.el",
+      "purpose": "Whole publication exactly replaces arbitrary old content across zero, empty, growing and shrinking row counts."
+    },
+    {
+      "name": "ebox-remount-repairs-foreign-rows-and-retired-newline-properties",
+      "file": "tests/ebox-mount-tests.el",
+      "purpose": "Remount repairs foreign inserted and deleted rows, removes stale newline input and display properties and leaves later distant updates correctly located."
+    },
+    {
+      "name": "ebox-remount-widens-and-resets-all-displaying-windows",
+      "file": "tests/ebox-mount-tests.el",
+      "purpose": "Mounting into a narrowed populated buffer still owns its whole text and starts point and every displaying window at the top."
+    },
+    {
       "name": "ebox-next-publication-repairs-foreign-text-and-properties",
       "file": "tests/ebox-update-tests.el",
       "purpose": "After initial and incremental publication, foreign text and property edits in a subsequently changed row are repaired from the retained tree."
