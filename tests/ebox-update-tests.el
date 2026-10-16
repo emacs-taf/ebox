@@ -391,4 +391,97 @@ B "))
           (ebox-activate position t)
           (should (= hits 1)))))))
 
+(ert-deftest ebox-overlay-local-updates-publish-only-the-changed-row ()
+  "A stable overlay publishes a local paint or text change independently of height."
+  (dolist (height '(6 60))
+    (ebox-test-with-mounted
+        (buffer root
+                `(column :width (ch 40) :height (lh ,(+ height 4))
+                         (box "Underlay")
+                         (box :position absolute :layer root :top (lh 2) :left (ch 3)
+                              :width (ch 24) :height (lh ,height)
+                              :backdrop-filter (brightness 0.5)
+                              (column (text "Header")
+                                      (text :id "subject" "Before")
+                                      (text :id "footer" "Footer")))))
+      (let* ((subject (car (ebox-selector-query root "#subject")))
+             (footer (car (ebox-selector-query root "#footer")))
+             (position (ebox-node-position footer))
+             (marker (copy-marker (1+ position))))
+        (unwind-protect
+            (dolist (change (list (lambda () (ebox-node-put subject :color "#A02030"))
+                                 (lambda () (ebox-node-set-text subject "After!"))))
+              (funcall change)
+              (let ((report (ebox-buffer-update-report buffer))
+                    (matches (ebox-test-buffer-matches-render-p root buffer)))
+                (should (> (plist-get report :lines) 0))
+                (should (<= (plist-get report :lines) 1))
+                (should matches))
+              (should (= (marker-position marker) (1+ position))))
+          (set-marker marker nil))))))
+
+(ert-deftest ebox-overlay-structural-updates-keep-the-surrounding-row-count ()
+  "Overlay content growth, movement and resizing never shift the canvas's rows."
+  (ebox-test-with-mounted
+      (buffer root
+              '(column :width (ch 40)
+                       (box :height (lh 9) "Underlay")
+                       (box "Bottom")
+                       (box :id "overlay" :position absolute :layer root
+                            :top (lh 1) :left (ch 3) :width (ch 24) :height (lh 6)
+                            (column (text "Header") (text :id "subject" "Before")))))
+    (let* ((subject (car (ebox-selector-query root "#subject")))
+           (overlay (car (ebox-selector-query root "#overlay")))
+           (rows (length (split-string (ebox-test-buffer-text buffer) "\n"))))
+      (dolist (change (list (lambda () (ebox-node-set-text subject "First\nSecond\nThird"))
+                           (lambda () (ebox-node-set-text subject "Short"))
+                           (lambda () (ebox-node-put overlay :top '(lh 3)))
+                           (lambda () (ebox-node-put overlay :height '(lh 4)))
+                           (lambda () (ebox-node-put overlay :top '(lh -2)))
+                           (lambda () (ebox-node-put subject :color "#A02030"))))
+        (funcall change)
+        (let* ((text (ebox-test-buffer-text buffer))
+               (current-rows (length (split-string text "\n")))
+               (matches (ebox-test-buffer-matches-render-p root buffer))
+               (report (ebox-buffer-update-report buffer)))
+          (should (= rows current-rows))
+          (should matches)
+          (should (string-match-p "Bottom" text))
+          (dolist (range (plist-get report :ranges))
+            (should (= (nth 1 range) (nth 2 range)))))))))
+
+(ert-deftest ebox-overlay-local-publication-respects-nested-hosts-and-stacking ()
+  "A root-layer descendant uses its host coordinates and keeps higher paint."
+  (ebox-test-with-mounted
+      (buffer root
+              '(column :width (ch 40) :height (lh 14)
+                       (box "Underlay")
+                       (column :position absolute :layer root :top (lh 2)
+                               :width (ch 30) :height (lh 9) :z-index 1
+                               (box "Outer")
+                               (column :id "inner" :position absolute :layer root
+                                       :top (lh 5) :left (ch 3) :width (ch 24)
+                                       :height (lh 4) :z-index 2
+                                       (text :id "subject" "Before")
+                                       (text "Covered")))
+                       (box :position absolute :layer root :top (lh 6) :left (ch 3)
+                            :width (ch 24) :height (lh 1) :z-index 3 "Higher")))
+    (let ((subject (car (ebox-selector-query root "#subject")))
+          (inner (car (ebox-selector-query root "#inner"))))
+      (ebox-node-set-text subject "After!")
+      (let ((report (ebox-buffer-update-report buffer))
+            (matches (ebox-test-buffer-matches-render-p root buffer)))
+        (should (= (plist-get report :lines) 1))
+        (should matches))
+      (let ((text (ebox-test-buffer-text buffer)))
+        (should (string-match-p "After!" text))
+        (should (string-match-p "Higher" text))
+        (should-not (string-match-p "Covered" text)))
+      (ebox-node-put inner :z-index 4)
+      (let ((matches (ebox-test-buffer-matches-render-p root buffer))
+            (text (ebox-test-buffer-text buffer)))
+        (should matches)
+        (should (string-match-p "Covered" text))
+        (should-not (string-match-p "Higher" text))))))
+
 ;;; ebox-update-tests.el ends here

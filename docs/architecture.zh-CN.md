@@ -146,6 +146,11 @@ absolute box 注册到 positioning host（最近的非 inline 父节点；`:laye
 与 selector 使用。anchored overlay 从唯一 target 计算 placement，并在 normal layout 后放置，使 target 移动无需触发
 无关 relayout。
 
+浮层位置、尺寸和层序不变，且 host 流内容未平移时，可保留内部行 damage。
+只有旧新行数相同，且范围处于根和浮层边界内的替换才走该路径。
+内部插行或删行、越界范围、位置变化和重排层序仍重绘有界的新旧覆盖范围：
+浮层内容绝不能增删 host buffer 的物理行。host 完整重排仍保留整浮层 damage。
+
 ## Paint 与 parts cache
 
 layout 产生 geometry；paint 按 root line 懒组合。node line 是由 margin、border、padding、content、overlay 与交互属性

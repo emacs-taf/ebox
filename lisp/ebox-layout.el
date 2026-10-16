@@ -1692,12 +1692,13 @@ That is the nearest non-inline parent, or the root for `:layer root'."
             (cons (max 0 (min left (max 0 (- width lw))))
                   (max 0 (min top (max 0 (- height lh))))))))))))
 
-(defun ebox--layout-overlay (host node)
-  "Lay out and place overlay NODE in HOST; return non-nil when it changed."
+(defun ebox--layout-overlay (host node &optional record)
+  "Lay out and place overlay NODE in HOST; return non-nil when it changed.
+RECORD keeps inner damage for a caller that can reuse stable overlay rows."
   (let* ((hgeo (ebox-node-layout host))
          (old (list (ebox-node-x node) (ebox-node-y node) (ebox-node-w node) (ebox-node-h node)
                     (ebox-node-placed node)))
-         (ebox--record nil))
+         (ebox--record record))
     (ebox--layout node (ebox-geo-bw hgeo) 'shrink (ebox-geo-bh hgeo))
     (let ((origin (ebox--place-overlay host node)))
       (setf (ebox-node-x node) (if origin (car origin) 0)
@@ -1731,18 +1732,40 @@ lines that showed an overlay before the shift must be repainted as well."
       (let* ((oy (ebox-node-y node)) (oh (ebox-node-h node))
              (was-placed (ebox-node-placed node))
              (dirty (or reordered (/= 0 (ebox-node-dirty node))))
-             (changed (ebox--layout-overlay host node)))
+             inner
+             (changed (let ((ebox--damage nil))
+                        (prog1 (ebox--layout-overlay host node ebox--record)
+                          (setq inner ebox--damage)))))
         (when (and ebox--record (or changed dirty (and moved (or was-placed (ebox-node-placed node)))))
-          (let* ((hgeo (ebox-node-layout host))
-                 (up (if moved (car shift) 0)) (down (if moved (cdr shift) 0))
-                 (top (+ (ebox-geo-mt hgeo) (min (+ oy up) (ebox-node-y node))))
-                 (bottom (+ (ebox-geo-mt hgeo)
-                            (max (+ oy oh down) (+ (ebox-node-y node) (ebox-node-h node)))))
-                 (top (max 0 (min top (ebox-node-h host))))
-                 (bottom (max top (min bottom (ebox-node-h host)))))
-            (when (> bottom top)
-              (push (list (list 'lines host top 'border) 0 (- bottom top) (- bottom top))
-                    ebox--damage))))))))
+          (if (and was-placed (not changed) (not reordered) (not moved)
+                   ;; An overlay is not in flow: an inner insertion/deletion
+                   ;; must never insert/delete the host's physical rows. Keep
+                   ;; clipped or escaping ranges on the bounded whole path.
+                   (let* ((top (ebox--item-top-in-root node))
+                          (bottom (+ top (ebox-node-h node)))
+                          (limit (ebox-node-h (ebox-node-root host))))
+                     (cl-every
+                      (lambda (damage)
+                        (and (= (nth 2 damage) (nth 3 damage))
+                             (let ((range (ebox--damage-range damage)))
+                               (or (null range)
+                                   (and (>= (car range) (max 0 top))
+                                        (<= (+ (car range) (nth 2 range))
+                                            (min limit bottom)))))))
+                      inner)))
+              ;; No inner damage also means no repaint: a logical descendant
+              ;; can be a root-layer overlay laid out by a different host.
+              (setq ebox--damage (nconc inner ebox--damage))
+            (let* ((hgeo (ebox-node-layout host))
+                   (up (if moved (car shift) 0)) (down (if moved (cdr shift) 0))
+                   (top (+ (ebox-geo-mt hgeo) (min (+ oy up) (ebox-node-y node))))
+                   (bottom (+ (ebox-geo-mt hgeo)
+                              (max (+ oy oh down) (+ (ebox-node-y node) (ebox-node-h node)))))
+                   (top (max 0 (min top (ebox-node-h host))))
+                   (bottom (max top (min bottom (ebox-node-h host)))))
+              (when (> bottom top)
+                (push (list (list 'lines host top 'border) 0 (- bottom top) (- bottom top))
+                      ebox--damage)))))))))
 
 (defun ebox--overlay-damage (host y h)
   "Record damage for HOST's border-box lines Y to Y+H under an overlay."

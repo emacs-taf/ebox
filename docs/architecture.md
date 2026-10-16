@@ -192,6 +192,13 @@ and still keep their logical parent for style and selectors.  Anchored overlays 
 and are placed after normal layout so target movement can be reflected without
 unrelated relayout.
 
+A stationary overlay retains its inner line damage when its placement, size and
+stacking order stay unchanged and the host's flow has not shifted. Only equal-height
+inner replacements contained in the visible root and overlay bounds can take this
+path. Inner insertions/deletions, escaping ranges, placement changes and reordering
+still repaint the bounded old/new coverage: overlay content must never insert or
+delete the host buffer's physical rows. Full host layout keeps whole-overlay damage.
+
 ## Paint and parts cache
 
 Layout produces geometry; paint is composed lazily per root line.  A node line is

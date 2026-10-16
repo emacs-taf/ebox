@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- A local paint or same-height text update inside a stationary overlay now
+  publishes its changed rows instead of repainting the entire panel. Movement,
+  resizing, stacking changes and structural updates keep full coverage and
+  never insert or delete the surrounding canvas's rows.
 - Mounting a previously laid-out tree replaces the whole destination buffer,
   even if foreign edits changed its row count. Old line coordinates and
   newline input properties no longer leak into the new mount.

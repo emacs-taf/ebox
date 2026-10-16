@@ -10,6 +10,21 @@
   ],
   "cases": [
     {
+      "name": "ebox-overlay-local-publication-respects-nested-hosts-and-stacking",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Local publication of a nested root-layer descendant uses its actual host coordinates and preserves higher overlays; stacking changes still repaint the full affected coverage."
+    },
+    {
+      "name": "ebox-overlay-local-updates-publish-only-the-changed-row",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "A local paint or same-height text change in a stable overlay publishes only that row, regardless of the overlay's total height."
+    },
+    {
+      "name": "ebox-overlay-structural-updates-keep-the-surrounding-row-count",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Overlay content growth, shrinkage, movement, resizing and clipping preserve the surrounding canvas's row count and fresh rendered output."
+    },
+    {
       "name": "ebox-remount-handles-empty-growing-and-shrinking-content",
       "file": "tests/ebox-mount-tests.el",
       "purpose": "Whole publication exactly replaces arbitrary old content across zero, empty, growing and shrinking row counts."
