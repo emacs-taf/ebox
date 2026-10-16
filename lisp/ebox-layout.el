@@ -2535,14 +2535,13 @@ so a face with no explicit color still dims on a graphical frame."
             (puthash key plist ebox--backdrop-filter-faces)
             plist)))))
 
-(defun ebox--backdrop-filter-string (string filter)
-  "Return STRING with every text and image run dimmed by FILTER.
-The result owns its text properties; immutable image composites are shared.
-No source files or external converters are consulted during paint."
-  (if (= (cadr filter) 1) string
-    (let* ((copy (copy-sequence string))
-           (length (length copy))
-           (position 0))
+(defun ebox--backdrop-filter-owned-string (string filter)
+  "Dim the text and image runs of owned STRING by FILTER and return it.
+The caller must copy shared source parts before calling this function.
+Immutable image composites remain shared.  Paint performs no source I/O."
+  (unless (= (cadr filter) 1)
+    (let ((length (length string))
+          (position 0))
       (while (< position length)
         (let* ((next (min (next-single-property-change position 'face string length)
                           (next-single-property-change position 'display string length)))
@@ -2551,7 +2550,7 @@ No source files or external converters are consulted during paint."
                (display (get-text-property position 'display string))
                (image (ebox-image--display-image display)))
           (when dimmed
-            (put-text-property position next 'face dimmed copy))
+            (put-text-property position next 'face dimmed string))
           (when image
             (let* ((own-bg (plist-get (cdr image) :background))
                    (foreground (or (plist-get (cdr image) :foreground)
@@ -2562,13 +2561,9 @@ No source files or external converters are consulted during paint."
                                  (ebox--face-attribute dimmed :background)))
                    (variant (ebox-image--brightness-display
                              display (cadr filter) foreground background)))
-              (put-text-property position next 'display variant copy)))
-          (setq position next)))
-      copy)))
-
-(defun ebox--backdrop-filtered-parts (parts filter)
-  "Return PARTS with their text and graphical pixels dimmed by FILTER."
-  (mapcar (lambda (string) (ebox--backdrop-filter-string string filter)) parts))
+              (put-text-property position next 'display variant string)))
+          (setq position next)))))
+  string)
 
 (defun ebox--backdrop-filter-blank-at-p (string position)
   "Return non-nil when the cell at POSITION of STRING paints no content."
@@ -2587,8 +2582,8 @@ No source files or external converters are consulted during paint."
       (cl-incf position))
     blank))
 
-(defun ebox--backdrop-cover-parts (parts cover)
-  "Keep PARTS' pixels but replace their native input properties with COVER's.
+(defun ebox--backdrop-cover-parts (parts cover filter)
+  "Dim PARTS by FILTER and replace their native input properties with COVER's.
 A filtered overlay borrows paint, never the covered text's hit owner,
 keymap, help or hover.  Preserve COVER's property runs so even blank child
 controls keep their own input identity.  Cached source strings are not mutated."
@@ -2601,14 +2596,15 @@ controls keep their own input identity.  Cached source strings are not mutated."
                              append (list property (get-text-property position property cover)))))
         (dolist (part (car split))
           (let ((copy (copy-sequence part)))
+            (ebox--backdrop-filter-owned-string copy filter)
             (add-text-properties 0 (length copy) props copy)
             (push copy out)))
         (setq position next rest (cdr split))))
     (nreverse out)))
 
-(defun ebox--backdrop-filter-merge-part (string behind)
-  "Return STRING with blank cells replaced by dimmed BEHIND pixels.
-BEHIND is a parts list covering at least STRING's width.  Return
+(defun ebox--backdrop-filter-merge-part (string behind filter)
+  "Return STRING with blank cells replaced by BEHIND pixels dimmed by FILTER.
+BEHIND is an unfiltered parts list covering at least STRING's width.  Return
 (MERGED . REST): MERGED is a list of strings covering STRING's width and
 REST is the unused tail of BEHIND."
   (cond
@@ -2616,7 +2612,7 @@ REST is the unused tail of BEHIND."
    ((ebox--backdrop-filter-blank-p string)
     (let ((split (ebox--split-parts behind (ebox--part-width string))))
       (cons (if (car split)
-                (ebox--backdrop-cover-parts (car split) string)
+                (ebox--backdrop-cover-parts (car split) string filter)
               (list string))
             (cdr split))))
    ((not (string-match-p " " string))
@@ -2634,7 +2630,7 @@ REST is the unused tail of BEHIND."
                    (split (ebox--split-parts rest width)))
               (setq rest (cdr split))
               (dolist (piece (ebox--backdrop-cover-parts
-                              (car split) (substring string position (1+ position))))
+                              (car split) (substring string position (1+ position)) filter))
                 (push piece out))
               (cl-incf position))
           (let ((start position))
@@ -2652,11 +2648,11 @@ REST is the unused tail of BEHIND."
   "Return SEGMENT showing UNDER, dimmed by FILTER, through its blank cells.
 SEGMENT and UNDER cover the same pixels.  A blank cell of SEGMENT keeps the
 dimmed pixel behind it, and a cell with its own content hides it."
-  (let ((behind (ebox--backdrop-filtered-parts under filter))
+  (let ((behind under)
         (out nil))
     (dolist (string segment)
       (pcase-let ((`(,merged . ,rest)
-                   (ebox--backdrop-filter-merge-part string behind)))
+                   (ebox--backdrop-filter-merge-part string behind filter)))
         (setq behind rest)
         (dolist (piece merged) (push piece out))))
     (nreverse out)))

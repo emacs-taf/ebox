@@ -455,6 +455,11 @@
       "purpose": "Image filtering respects identity brightness, nested overlays, palette changes and live source replacement."
     },
     {
+      "name": "ebox-backdrop-filter-partial-paint-preserves-source-and-input",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "Partial overlay updates and repeated dim/identity filters preserve the source paint and restore native input after removal."
+    },
+    {
       "name": "ebox-backdrop-filter-keeps-overlay-content-crisp",
       "file": "tests/ebox-backdrop-filter-tests.el",
       "purpose": "An overlay's own content stays crisp while only the pixels behind its blank cells are dimmed."

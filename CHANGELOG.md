@@ -6,6 +6,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Backdrop updates filter only the background spans they actually show and
+  apply input ownership on the same owned copy, reducing transient allocation
+  during modal search and editing without changing colors or hit isolation.
 - Filtered backdrops now dim PNG, JPEG and SVG pixels on graphical frames
   with SVG support, including native `currentColor` icons. Cached in-memory
   composites preserve alpha, image slices, row insets and the application

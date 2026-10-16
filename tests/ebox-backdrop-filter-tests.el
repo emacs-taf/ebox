@@ -8,7 +8,7 @@
 
 (ert-deftest ebox-backdrop-filter-keeps-text-and-dims-colors ()
   "A filtered overlay keeps covered text visible with dimmed colors."
-  (let* ((ebox-viewport-width 12)
+  (let* ((ebox-viewport-width (* 12 (frame-char-width)))
          (ebox-viewport-height 1)
          (rendered
           (ebox-render
@@ -42,7 +42,7 @@
 
 (ert-deftest ebox-backdrop-filter-keeps-image-content-visible ()
   "A filtered overlay does not blank the image cells behind it."
-  (let* ((ebox-viewport-width 6)
+  (let* ((ebox-viewport-width (* 6 (frame-char-width)))
          (ebox-viewport-height 1)
          (image (ebox-node-create
                  'image (list :image (ebox-image-prepare
@@ -58,9 +58,47 @@
                        :backdrop-filter (brightness 0.5))))))
     (should (equal (substring-no-properties rendered 0 2) ".."))))
 
+(ert-deftest ebox-backdrop-filter-partial-paint-preserves-source-and-input ()
+  "Partial filtered paint keeps source faces and separates covering input."
+  (let* ((under-map (ebox-keymap-create :activate #'ignore))
+         (cover-map (ebox-keymap-create :activate #'ignore))
+         (cover (ebox-build
+                 (list 'box :position 'absolute :layer 'root
+                       :left '(ch 2) :top '(lh 0) :width '(ch 8) :height '(lh 1)
+                       :color "#00FF00" :keymap cover-map :help-echo "Cover"
+                       :backdrop-filter '(brightness 0.5) "XX  YY"))))
+    (ebox-test-with-mounted
+        (buffer root
+                (list 'column :width '(ch 12) :height '(lh 1)
+                      (list 'box :width '(ch 12) :height '(lh 1)
+                            :color "#FFFFFF" :background-color "#204060"
+                            :keymap under-map :help-echo "Source" "ABCDEFGHIJKL")))
+      (let ((before (buffer-substring-no-properties (point-min) (point-max)))
+            (face (copy-tree (get-text-property 5 'face))))
+        (dolist (amount '(0.5 1 0.75))
+          (ebox-node-put cover :backdrop-filter (list 'brightness amount))
+          (ebox-node-insert root cover)
+          (let ((text (buffer-substring-no-properties 1 13))
+                (owned (eq (get-text-property 5 'keymap) cover-map)))
+            (should (equal text "ABXXEFYYIJKL"))
+            (should owned))
+          (should (equal (get-text-property 5 'help-echo) "Cover"))
+          (should (equal (get-text-property 1 'face) face))
+          (ebox-node-set-text (ebox-node-child cover 0) "X   Y")
+          (let ((text (buffer-substring-no-properties 1 13)))
+            (should (equal text "ABXDEFYHIJKL")))
+          (ebox-node-remove cover)
+          (let ((text (buffer-substring-no-properties (point-min) (point-max)))
+                (owned (eq (get-text-property 5 'keymap) under-map)))
+            (should (equal text before))
+            (should owned))
+          (should (equal (get-text-property 5 'face) face))
+          (should (equal (get-text-property 5 'help-echo) "Source"))
+          (ebox-node-set-text (ebox-node-child cover 0) "XX  YY"))))))
+
 (ert-deftest ebox-backdrop-filter-keeps-overlay-content-crisp ()
   "Only the pixels behind an overlay dim; its own content stays unchanged."
-  (let* ((ebox-viewport-width 8)
+  (let* ((ebox-viewport-width (* 8 (frame-char-width)))
          (ebox-viewport-height 1)
          (rendered
           (ebox-render
@@ -133,7 +171,7 @@
 
 (ert-deftest ebox-backdrop-filter-brightness-range-and-invalid-values ()
   "Brightness 1 keeps colors, higher values clamp, and other filters\nare dropped instead of dimming."
-  (let* ((ebox-viewport-width 6)
+  (let* ((ebox-viewport-width (* 6 (frame-char-width)))
          (ebox-viewport-height 1)
          (identity
           (ebox-render
@@ -164,8 +202,8 @@
                          :backdrop-filter (blur 2))))))
     (should (equal (get-text-property 0 'face identity)
                    '((:foreground "#FFFFFF") (:background "#101820"))))
-    (should (equal (get-text-property 0 'face raised)
-                   '(:foreground "#FFFFFFFFFFFF")))
+    (should (equal (plist-get (get-text-property 0 'face raised) :foreground)
+                   "#FFFFFFFFFFFF"))
     (should (equal (substring-no-properties unsupported) " "))))
 
 (ert-deftest ebox-backdrop-filter-reattaching-the-same-overlay-repaints ()
@@ -329,7 +367,7 @@
                                 :left (px 0) :top (lh 0) :width (% 100) :height (% 100)
                                 :backdrop-filter (brightness 0.5)))))
     (ebox-test-with-mounted
-        (buffer root (ebox-node-create 'column '(:width (px 16) :height (lh 1)
+        (buffer _root (ebox-node-create 'column '(:width (px 16) :height (lh 1)
                                                 :background-color "#202830") (list text veil)))
       (let ((white (car (ebox-test-backdrop-images (ebox-test-buffer-string)))))
         (ebox-node-put text :color "#4080C0")

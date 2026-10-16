@@ -243,6 +243,10 @@ splices need no remeasurement.  An overlay line without a border stays a part
 list, so moving an overlay costs its covered lines times their part count.
 
 Filtered overlays borrow the underlying paint but replace its input decoration.
+Composition first clips the background to the overlay's blank spans. Each borrowed
+part is copied once, filtered and assigned the covering input properties on that
+owned copy; pixels hidden by the overlay's own content are not filtered. Shared
+source parts stay immutable, without a new cache of callback-bearing strings.
 Text filtering flattens inherited face lists and resolves canvas-remapped default
 colors. PNG, JPEG and SVG data descriptors use an in-memory SVG component-transfer
 composite, with sRGB channels multiplied while alpha stays unchanged. Raster
