@@ -6,6 +6,14 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Filtered backdrops now dim PNG, JPEG and SVG pixels on graphical frames
+  with SVG support, including native `currentColor` icons. Cached in-memory
+  composites preserve alpha, image slices, row insets and the application
+  palette without reopening sources or running external converters.
+  Other native formats stay visible without pixel filtering.
+- Removing and reattaching the same overlay at unchanged coordinates now
+  repaints it instead of retaining the uncovered background.
+
 - Reattaching a retained subtree restores its absolute descendants and their
   style context. Closing an in-buffer overlay no longer loses positioned
   application content or leaves later responsive child updates unstyled.

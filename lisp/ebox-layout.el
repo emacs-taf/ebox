@@ -795,10 +795,16 @@ Return nil when NODE's content depends on its forced height."
          (places (list (ebox-node-w node) (ebox-node-h node) (ebox-geo-bw geo)
                        (ebox-geo-bh geo) (ebox-geo-scroll geo))))
     (ebox--do-kids (kid node)
-      (setq places (cons (ebox-node-h kid)
-                         (cons (ebox-node-w kid)
-                               (cons (ebox-node-y kid)
-                                     (cons (ebox-node-x kid) (cons kid places)))))))
+      ;; A detached child retains its numeric size but has no painted layout
+      ;; or overlay placement.  Reattaching it is new paint even at the same
+      ;; coordinates, not an unchanged place whose damage can be discarded.
+      (setq places (cons (and (ebox-node-layout kid) t)
+                         (cons (ebox-node-placed kid)
+                               (cons (ebox-node-h kid)
+                                     (cons (ebox-node-w kid)
+                                           (cons (ebox-node-y kid)
+                                                 (cons (ebox-node-x kid)
+                                                       (cons kid places)))))))))
     places))
 
 (defun ebox--layout-full (node avail mode cbh fh)
@@ -2437,7 +2443,10 @@ own backgrounds take precedence, and its shared strings are not modified."
   "Return the frame default color for ATTRIBUTE, or nil when unspecified.
 Batch and terminal frames report `unspecified-fg' and `unspecified-bg', so
 these pixels keep their original colors there."
-  (let ((value (face-attribute 'default attribute nil t)))
+  (let* ((buffer (or ebox--measure-buffer (current-buffer)))
+         (remap (buffer-local-value 'face-remapping-alist buffer))
+         (value (or (ebox--face-attribute (cdr (assq 'default remap)) attribute)
+                    (face-attribute 'default attribute ebox--measure-frame t))))
     (and (stringp value)
          (not (string-empty-p value))
          (not (member value '("unspecified-fg" "unspecified-bg")))
@@ -2475,19 +2484,23 @@ original color string so an identity filter does not restyle a face."
                        (min 65535 (round (* value brightness))))
                      rgb)))))
 
+(defun ebox--backdrop-filter-plain-face-p (face)
+  "Return non-nil for nil, a face plist or nested lists of face plists."
+  (or (null face) (keywordp (car-safe face))
+      (and (consp face) (cl-every #'ebox--backdrop-filter-plain-face-p face))))
+
 (defun ebox--backdrop-filter-plist (face)
-  "Return FACE as one plist, keeping the first value of each attribute.
-FACE is nil, a face plist or a list of face plists, as Ebox composes them."
+  "Flatten Ebox FACE, preserving the first value of each attribute.
+Inherited image/icon faces can contain nested lists of face plists."
   (cond
    ((null face) nil)
    ((keywordp (car-safe face)) (copy-sequence face))
    ((consp face)
     (let (plist)
       (dolist (part face)
-        (when (keywordp (car-safe part))
-          (cl-loop for (key value) on part by #'cddr
-                   unless (plist-member plist key)
-                   do (setq plist (plist-put plist key value)))))
+        (cl-loop for (key value) on (ebox--backdrop-filter-plist part) by #'cddr
+                 unless (plist-member plist key)
+                 do (setq plist (plist-put plist key value))))
       plist))
    (t nil)))
 
@@ -2496,22 +2509,16 @@ FACE is nil, a face plist or a list of face plists, as Ebox composes them."
 A face that is not an Ebox-composed plist, such as a symbol or a named face
 list, is returned unchanged.  Missing colors fall back to the frame default,
 so a face with no explicit color still dims on a graphical frame."
-  (if (not (or (null face)
-               (keywordp (car-safe face))
-               (and (consp face)
-                    (cl-every (lambda (part) (keywordp (car-safe part))) face))))
-      face
+  (if (not (ebox--backdrop-filter-plain-face-p face)) face
     (let* ((brightness (cadr filter))
-           (key (list face filter))
+           (foreground (or (ebox--face-attribute face :foreground)
+                           (ebox--backdrop-filter-default :foreground)))
+           (background (or (ebox--face-attribute face :background)
+                           (ebox--backdrop-filter-default :background)))
+           (key (list face filter foreground background))
            (cached (gethash key ebox--backdrop-filter-faces)))
       (or cached
           (let* ((plist (ebox--backdrop-filter-plist face))
-                 (original-fg (plist-get plist :foreground))
-                 (original-bg (plist-get plist :background))
-                 (foreground (or original-fg
-                                 (ebox--backdrop-filter-default :foreground)))
-                 (background (or original-bg
-                                 (ebox--backdrop-filter-default :background)))
                  (dimmed (or (and foreground
                                   (ebox--backdrop-filter-color foreground brightness))
                              foreground))
@@ -2529,38 +2536,39 @@ so a face with no explicit color still dims on a graphical frame."
             plist)))))
 
 (defun ebox--backdrop-filter-string (string filter)
-  "Return STRING with every face run dimmed by FILTER.
-The result is a fresh copy: strings with equal characters but different
-text properties must not share each other's colors."
-  (let* ((copy (copy-sequence string))
-         (length (length copy))
-         (position 0))
-    (while (< position length)
-      (let* ((next (or (next-single-property-change position 'face string)
-                       length))
-             (face (get-text-property position 'face string))
-             (dimmed (ebox--backdrop-filter-face face filter)))
-        (when dimmed
-          (put-text-property position next 'face dimmed copy))
-        (setq position next)))
-    copy))
-
-(defun ebox--backdrop-filter-image-p (string)
-  "Return non-nil when STRING paints an image glyph.
-Image pixels are kept as they are: a text composite cannot recolor an image,
-and blanking it would hide the content the overlay must preserve."
-  (let ((display (get-text-property 0 'display string)))
-    (and display (not (eq (car-safe display) 'space)) t)))
+  "Return STRING with every text and image run dimmed by FILTER.
+The result owns its text properties; immutable image composites are shared.
+No source files or external converters are consulted during paint."
+  (if (= (cadr filter) 1) string
+    (let* ((copy (copy-sequence string))
+           (length (length copy))
+           (position 0))
+      (while (< position length)
+        (let* ((next (min (next-single-property-change position 'face string length)
+                          (next-single-property-change position 'display string length)))
+               (face (get-text-property position 'face string))
+               (dimmed (ebox--backdrop-filter-face face filter))
+               (display (get-text-property position 'display string))
+               (image (ebox-image--display-image display)))
+          (when dimmed
+            (put-text-property position next 'face dimmed copy))
+          (when image
+            (let* ((own-bg (plist-get (cdr image) :background))
+                   (foreground (or (plist-get (cdr image) :foreground)
+                                   (ebox--face-attribute face :foreground)
+                                   (ebox--backdrop-filter-default :foreground)))
+                   (background (if own-bg
+                                   (ebox--backdrop-filter-color own-bg (cadr filter))
+                                 (ebox--face-attribute dimmed :background)))
+                   (variant (ebox-image--brightness-display
+                             display (cadr filter) foreground background)))
+              (put-text-property position next 'display variant copy)))
+          (setq position next)))
+      copy)))
 
 (defun ebox--backdrop-filtered-parts (parts filter)
-  "Return PARTS with text dimmed by FILTER and image pixels preserved."
-  (let (out)
-    (dolist (string parts)
-      (push (if (ebox--backdrop-filter-image-p string)
-                string
-              (ebox--backdrop-filter-string string filter))
-            out))
-    (nreverse out)))
+  "Return PARTS with their text and graphical pixels dimmed by FILTER."
+  (mapcar (lambda (string) (ebox--backdrop-filter-string string filter)) parts))
 
 (defun ebox--backdrop-filter-blank-at-p (string position)
   "Return non-nil when the cell at POSITION of STRING paints no content."

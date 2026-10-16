@@ -132,6 +132,7 @@ layout 会跳过。
 成为 damage，ancestor 只看到它的新 outer size。如果局部重排已经改过 child 几何再回退，
 必须标记 container 的整个 margin box：此时重新拍 child-place 快照只会看到新尺寸，
 不能代表 buffer 中仍显示的旧布局。这样固定高度编辑器内部的文字增减不会变成外部 buffer 的插行或删行。
+位置快照也包含 layout 是否存在及 overlay 是否已放置：摘下的节点可以保留数值尺寸，重新接入相同坐标仍是新绘制。
 
 文本测量按 text node、font face 与 wrap mode 缓存。paragraph layout 将文本拆成 pixel-width units，保留受支持
 cluster 与 fixed display space。图形 frame 上，若某 cluster 的回退字体高于其 face 的行高（彩色 emoji、符号、数学字母，或字体 ascent/descent 超过默认字体的任何文字，每个字符只判定一次），
@@ -171,6 +172,15 @@ overlay 拼接进它覆盖的行时不做字符串连接。`ebox--split-parts` �
 跨越切点的 string 变为按宽度截取的 substring 加边缘空白（空白保留被切单元除 `display` 外的属性，交互因此不丢失），组合出的 string 把像素宽度记录在
 `ebox--part-widths` 中，后续拼接无需重新测量。没有边框的 overlay 行保持为 part list，
 因此移动 overlay 的成本是覆盖行数乘以各行的 part 数。
+
+带滤镜的 overlay 借用下层绘制，但替换其输入装饰。文本滤镜展平嵌套继承 face，并读取画布 remap 后的默认颜色。
+PNG、JPEG 与 SVG 的 data 描述符使用内存 SVG component-transfer 合成：在 sRGB 中乘颜色通道，不改变 alpha。
+栅格字节以内嵌图像绘制；SVG 内容保留为矢量，而不是低分辨率的嵌套图片。
+SVG 根的 `currentColor` 使用原生前景色，透明像素使用滤镜后的背景色。
+原生 slice/raise 修饰保持在合成图像之外，局部裁剪和行内 inset 因此保留几何。
+弱身份缓存按亮度、颜色与 frame，为每个存活的描述符或 display 最多保留八份近期变体，不持有节点或回调。
+不支持的图片格式、仅含文件的原生 display 及无 SVG 的 frame 保留原图像素，不会把内容丢掉。
+prepared 图像已经拥有来源字节，合成变体不做来源 I/O。
 
 ## Buffer 写入
 
@@ -222,7 +232,7 @@ pre-command hook 把每个按键转到它在编辑 buffer 中的绑定，因此�
 - 纵向 geometry 基于行；横向 geometry 基于像素。
 - 同 constraint 下的 clean node 保留 layout 与 composed line cache。dirty node 要么记录精确 damage，要么 damage 最小 shape-changing boundary。
 - buffer 写入保留无关 buffer state：read-only、undo list、modified flag、point 与 window start。
-- 图片 decoding 与外部 converter 执行只发生在图片准备阶段，绝不发生在 layout 或 buffer 写入中。
+- 来源读取与外部 converter 执行只发生在图片准备阶段，绝不发生在 layout 或 buffer 写入中。准备会预热原生解码；首次背景或亮度变体可解码内存描述符，此后绘制复用它。
 - 图形图片的每一行是一个显示整行切片的字形：redisplay 对每个字形都绘制一次图片（某些平台还会重新缩放），按单元格切片会把滚动和重绘成本乘上列数。在盒子或浮层边缘裁剪这样的行时缩窄切片，而不是换成空格。
 - private module 可以变化；consumer 只 require `ebox`，只使用 `ebox.el` 中记录的 symbol。
 

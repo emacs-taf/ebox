@@ -425,6 +425,36 @@
       "purpose": "A filtered overlay keeps the image cells behind it visible instead of blanking them."
     },
     {
+      "name": "ebox-backdrop-filter-dims-nested-inherited-faces",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "Nested inherited native face lists retain their effective foreground and background colors when dimmed."
+    },
+    {
+      "name": "ebox-backdrop-filter-svg-follows-native-current-color",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "Filtered currentColor SVG icons preserve each native face color instead of becoming black or reusing another palette."
+    },
+    {
+      "name": "ebox-backdrop-filter-reattaching-the-same-overlay-repaints",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "Repeatedly removing and reattaching the same filtered overlay repaints it even when its retained size and coordinates are unchanged."
+    },
+    {
+      "name": "ebox-backdrop-filter-dims-prepared-raster-and-restores-slices",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "Prepared raster images dim without reopening their source, preserve geometry and insets, reuse composites, and restore exactly."
+    },
+    {
+      "name": "ebox-backdrop-filter-dims-native-display-runs-and-blocks-input",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "Native SVG displays and partial slices dim while the covering node retains hit ownership and blocks covered focus and activation."
+    },
+    {
+      "name": "ebox-backdrop-filter-image-identity-nesting-theme-and-live-update",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "Image filtering respects identity brightness, nested overlays, palette changes and live source replacement."
+    },
+    {
       "name": "ebox-backdrop-filter-keeps-overlay-content-crisp",
       "file": "tests/ebox-backdrop-filter-tests.el",
       "purpose": "An overlay's own content stays crisp while only the pixels behind its blank cells are dimmed."

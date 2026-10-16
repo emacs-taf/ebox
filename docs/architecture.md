@@ -165,7 +165,9 @@ If partial layout has already changed a child's geometry before falling back,
 the container must damage its whole margin box: a new child-place snapshot
 would only see the changed sizes, not the old layout still in the buffer.
 This keeps internal text growth inside a fixed-height editor from becoming
-insertions or deletions in the surrounding buffer.
+insertions or deletions in the surrounding buffer. Place snapshots also include
+layout liveness and overlay placement: a detached child can keep its numeric
+size, but reattaching it at those coordinates still introduces new paint.
 
 Text measurement is cached per text node, font face and wrap mode.  Paragraph
 layout breaks text into pixel-width units, preserving supported clusters and
@@ -239,6 +241,20 @@ keep the cut unit's properties other than `display` (so interaction survives), a
 composed strings record their pixel widths in `ebox--part-widths` so later
 splices need no remeasurement.  An overlay line without a border stays a part
 list, so moving an overlay costs its covered lines times their part count.
+
+Filtered overlays borrow the underlying paint but replace its input decoration.
+Text filtering flattens inherited face lists and resolves canvas-remapped default
+colors. PNG, JPEG and SVG data descriptors use an in-memory SVG component-transfer
+composite, with sRGB channels multiplied while alpha stays unchanged. Raster
+bytes are embedded; SVG content stays vector instead of becoming a low-resolution
+nested image. Its root receives the original native foreground for `currentColor`;
+transparent pixels use the filtered background. Native slice/raise modifiers stay outside
+the composite, so partial clipping and row insets retain their geometry.
+Weak identity caches retain at most eight recent variants per live descriptor
+or display, keyed by amount, colors and frame, without nodes or callbacks.
+Unsupported image formats, file-only native displays and frames without SVG
+keep the original pixels rather than dropping content. Prepared images already
+own their source bytes; composing a variant never performs source I/O.
 
 ## Buffer writes
 
@@ -341,8 +357,10 @@ so the cursor never lands in clipped content.
   boundary whose shape changed.
 - Buffer writes preserve unrelated buffer state: read-only, undo list,
   modified flag, point and window starts.
-- Image decoding and external converter execution happen only in image
-  preparation, never in layout or buffer writing.  Preparation results are
+- Source reads and external converter execution happen only in image
+  preparation, never in layout or buffer writing. Preparation warms native
+  decoding; the first background or brightness variant may decode an in-memory
+  descriptor, and subsequent paints reuse it. Preparation results are
   cached by source identity, size and frame; the bounded cache keeps the most
   recently used preparations, so a screen holding many images reuses them
   across updates instead of rebuilding each one.  Graphics preparation

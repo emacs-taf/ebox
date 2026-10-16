@@ -572,6 +572,9 @@
 ;; (TOP . BOTTOM) leaves that many pixels, under one line each, empty inside a
 ;; graphics image's first and last rows; the gap shows the box background.
 ;; Graphics images composite transparent pixels over their box background.
+;; With native SVG support, filtered overlays dim prepared PNG/JPEG/SVG
+;; pixels as cached in-memory composites, keeping alpha, slices and geometry.
+;; Other native image formats remain visible without pixel filtering.
 ;;
 ;; Function: ebox-image-content (prepared)
 ;;;###autoload (autoload 'ebox-image-content "ebox" nil nil)
@@ -583,7 +586,7 @@
 ;;
 ;; Function: ebox-image-cache-clear ()
 ;;;###autoload (autoload 'ebox-image-cache-clear "ebox" nil nil)
-;; Release cached preparations without changing live image content.
+;; Release cached preparations and paint composites without changing live images.
 ;;
 ;; Variable: ebox-image-converters
 ;; Ordered (NAME . FUNCTION) image converters, called only by preparation.

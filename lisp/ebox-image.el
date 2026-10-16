@@ -2,14 +2,16 @@
 
 ;;; Commentary:
 ;; Image preparation owns I/O, capability selection and immutable cell rasters.
-;; Image nodes and text content lay out the prepared lines; no decoder,
-;; process or image constructor runs during layout or buffer writes.
+;; Image nodes and text content lay out prepared lines without source I/O.
+;; Paint may derive cached, in-memory SVG brightness composites; it never
+;; rereads a file or starts an external converter.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'subr-x)
 (require 'image)
+(require 'xml)
 (require 'ansi-color)
 (require 'ebox-measure)
 
@@ -75,10 +77,26 @@ fixed count does not evict every unrelated one on each preparation.")
         (remhash (cdr (car stamps)) ebox-image--cache)
         (setq stamps (cdr stamps))))))
 
+(defvar ebox-image--composites (make-hash-table :test 'eq :weakness 'key)
+  "Paint variants keyed by immutable image or display identity.
+Each live source retains at most eight recent parameter variants.  Keys
+contain only paint parameters, never nodes, input handlers or mounted trees.")
+
+(defun ebox-image--composite (source key make)
+  "Return SOURCE's cached KEY variant, or build it once with MAKE."
+  (let* ((variants (gethash source ebox-image--composites))
+         (entry (assoc key variants)))
+    (unless entry (setq entry (cons key (funcall make))))
+    (setq variants (cons entry (delq entry (gethash source ebox-image--composites))))
+    (when (> (length variants) 8) (setcdr (nthcdr 7 variants) nil))
+    (puthash source variants ebox-image--composites)
+    (cdr entry)))
+
 (defun ebox-image-cache-clear ()
-  "Release cached preparations without changing live image content.
+  "Release cached preparations and composites without changing live images.
 Call after installing converters or changing their configuration."
   (clrhash ebox-image--cache)
+  (clrhash ebox-image--composites)
   (setq ebox-image--cache-uses 0))
 
 (defun ebox-image--source (source)
@@ -193,6 +211,119 @@ INSET is (TOP . BOTTOM) pixels left empty above and below the image."
                                                    'bottom)))))
            (number-sequence 0 (1- rows)) "\n"))))))
 
+(defun ebox-image--display-image (display)
+  "Return the image in native DISPLAY, including sliced/raised displays."
+  (cond ((eq (car-safe display) 'image) display)
+        ((consp (car-safe display)) (assq 'image display))))
+
+(defun ebox-image--svg-brightness (data amount foreground)
+  "Filter SVG DATA by AMOUNT without rasterizing its vector content.
+FOREGROUND supplies native currentColor before filtering.  Preserve explicit
+colors, namespaces and the root viewport, including nonzero viewBox origins."
+  (let* ((tree (with-temp-buffer
+                 (insert (if (multibyte-string-p data) data
+                           (decode-coding-string data 'utf-8)))
+                 (xml-parse-region (point-min) (point-max))))
+         (root (car tree))
+         (viewbox (cdr (assq 'viewBox (cadr root))))
+         (bounds (and viewbox (split-string viewbox "[ ,\t\n]+" t)))
+         (id "ebox-brightness")
+         (slope (number-to-string amount)))
+    (while (string-match-p (regexp-quote id) data) (setq id (concat id "-b")))
+    (when (and foreground (not (assq 'color (cadr root))))
+      (setf (cadr root) (cons (cons 'color foreground) (cadr root))))
+    (setcdr
+     (cdr root)
+     (list
+      `(defs nil
+         (filter ((id . ,id) (filterUnits . "userSpaceOnUse")
+                  (x . ,(or (nth 0 bounds) "0")) (y . ,(or (nth 1 bounds) "0"))
+                  (width . ,(or (nth 2 bounds) "100%"))
+                  (height . ,(or (nth 3 bounds) "100%"))
+                  (color-interpolation-filters . "sRGB"))
+           (feComponentTransfer nil
+             (feFuncR ((type . "linear") (slope . ,slope)))
+             (feFuncG ((type . "linear") (slope . ,slope)))
+             (feFuncB ((type . "linear") (slope . ,slope))))))
+      (cons 'g (cons (list (cons 'filter (concat "url(#" id ")"))) (cddr root)))))
+    (with-temp-buffer (xml-print tree) (buffer-string))))
+
+(defun ebox-image--brightness-image (image amount foreground background frame)
+  "Return IMAGE's in-memory AMOUNT brightness variant on FRAME.
+FOREGROUND is its native color before filtering.  BACKGROUND is the
+already filtered background for transparent pixels.
+Only self-contained PNG, JPEG and SVG data are embedded: unsupported or
+file-only native descriptors keep their pixels rather than disappearing.
+Preparation turns local image files into self-contained data descriptors."
+  (let* ((props (cdr image))
+         (data (plist-get props :data))
+         (mime (alist-get (plist-get props :type)
+                          '((png . "image/png") (jpeg . "image/jpeg")
+                            (svg . "image/svg+xml")))))
+    (if (not (and mime (stringp data) (not (plist-get props :file))
+                  (display-graphic-p frame) (image-type-available-p 'svg)))
+        image
+      (ebox-image--composite
+       image (list 'brightness amount foreground background frame)
+       (lambda ()
+         (let* ((rotation (plist-get props :rotation))
+                (size (image-size
+                       (if (or (null rotation) (zerop rotation)) image
+                         (cons 'image (plist-put (copy-sequence props) :rotation 0)))
+                       t frame))
+                (margin (or (plist-get props :margin) 0))
+                (relief (abs (or (plist-get props :relief) 0)))
+                (width (- (car size) (* 2 (+ relief (if (consp margin) (car margin) margin)))))
+                (height (- (cdr size) (* 2 (+ relief (if (consp margin) (cdr margin) margin)))))
+                (svg-source (eq (plist-get props :type) 'svg))
+                (uri (unless svg-source
+                       (ebox-image--composite
+                        image 'data-uri
+                        (lambda ()
+                          (concat "data:" mime ";base64,"
+                                  (base64-encode-string data t))))))
+                (svg (if svg-source
+                         (ebox-image--svg-brightness data amount foreground)
+                       (format
+                        (concat "<svg xmlns='http://www.w3.org/2000/svg' "
+                              "xmlns:xlink='http://www.w3.org/1999/xlink' width='%s' height='%s'>"
+                              "<defs><filter id='b' x='0' y='0' width='1' height='1' "
+                              "color-interpolation-filters='sRGB'><feComponentTransfer>"
+                              "<feFuncR type='linear' slope='%s'/>"
+                              "<feFuncG type='linear' slope='%s'/>"
+                              "<feFuncB type='linear' slope='%s'/>"
+                              "</feComponentTransfer></filter></defs>"
+                              "<image width='%s' height='%s' preserveAspectRatio='none' "
+                              "filter='url(#b)' xlink:href='%s'/></svg>")
+                        width height amount amount amount width height uri)))
+                (variant (cl-loop for (key value) on props by #'cddr
+                                  unless (memq key '(:type :data :width :height :scale
+                                                    :max-width :max-height :background))
+                                  append (list key value))))
+           ;; The wrapper uses the already displayed dimensions; retaining the
+           ;; original scale would scale twice.  Native margin, relief, ascent
+           ;; and rotation still apply, and display slices are left untouched.
+           (append (list 'image :type 'svg :data svg :width width :height height :scale 1)
+                   (and background (list :background background)) variant)))))))
+
+(defun ebox-image--brightness-display (display amount foreground background)
+  "Filter DISPLAY by AMOUNT with FOREGROUND over BACKGROUND without I/O.
+Keep native slice/raise modifiers and share each derived display value."
+  (let* ((image (ebox-image--display-image display))
+         (frame (or ebox--measure-frame
+                    (and ebox--measure-buffer
+                         (when-let* ((window (get-buffer-window ebox--measure-buffer)))
+                           (window-frame window)))
+                    (selected-frame))))
+    (if (or (= amount 1) (not image)) display
+      (ebox-image--composite
+       display (list 'display amount foreground background frame)
+       (lambda ()
+         (let ((variant (ebox-image--brightness-image image amount foreground background frame)))
+           (cond ((eq variant image) display)
+                 ((eq display image) variant)
+                 (t (mapcar (lambda (item) (if (eq item image) variant item)) display)))))))))
+
 (defun ebox-image--run (source program arguments)
   "Run PROGRAM with ARGUMENTS on SOURCE, returning bytes only on success."
   (when-let* ((executable (executable-find program)))
@@ -291,7 +422,9 @@ placeholder.  Text skips graphics.  Placeholder skips both.  CONVERTERS obeys
 INSET is nil or (TOP . BOTTOM), pixels below one line height that a graphics
 image leaves empty above and below it inside its rows; the image scales
 into the rest, and the gap shows the box background.
-This is the only I/O/decoding step: call outside the render/commit hot path.
+This is the only source I/O step: call outside the render/commit hot path.
+Native decoding is warmed here.  Paint can derive cached SVG brightness
+composites from these bytes without reopening the source or converters.
 Repeat after source or frame/font changes; identical preparations are cached."
   (unless (and (integerp columns) (> columns 0) (integerp rows) (> rows 0))
     (error "Ebox image columns and rows must be positive integers"))
