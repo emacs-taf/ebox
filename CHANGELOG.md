@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Optional native image and font calls no longer produce undeclared-function
+  warnings on text-only Emacs builds. Wheel events outside a mounted Ebox
+  buffer load the standard mouse-wheel library for their fallback handler.
+
 - A local paint or same-height text update inside a stationary overlay now
   publishes its changed rows instead of repainting the entire panel. Movement,
   resizing, stacking changes and structural updates keep full coverage and

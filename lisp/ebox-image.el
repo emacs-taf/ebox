@@ -15,6 +15,11 @@
 (require 'ansi-color)
 (require 'ebox-measure)
 
+;; Native image primitives are absent from text-only Emacs builds. They are
+;; used only after graphical capability selection, not for the text adapter.
+(declare-function image-size "image.c" (spec &optional pixels frame))
+(defvar image-types)
+
 (cl-defstruct (ebox-image--prepared (:constructor ebox-image--make-prepared)
                                     (:copier nil))
   "Immutable, detached raster prepared for one character allocation.

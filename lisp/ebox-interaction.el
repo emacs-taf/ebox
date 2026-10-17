@@ -16,6 +16,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'mwheel)
 (require 'ebox-node)
 (require 'ebox-layout)
 (require 'ebox-buffer)

@@ -10,6 +10,8 @@
 
 (require 'cl-lib)
 
+;; The graphical branch is not entered on builds without native fonts.
+(declare-function font-info "font.c" (name &optional frame))
 (declare-function ebox-image--metrics "ebox-image" (frame))
 
 (defvar ebox--measure-buffer nil
