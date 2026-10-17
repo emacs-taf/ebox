@@ -907,13 +907,21 @@ Unlike Tab navigation, members of focus groups are all listed."
   (let ((mount (ebox--mount-for buffer-or-name)))
     (ebox--raw-stops mount (ebox--focus-scope mount))))
 
-(defun ebox-focus-edge (last &optional buffer-or-name)
+(defun ebox-focus-edge (last &optional buffer-or-name root)
   "Focus the first member of the focused node's group, or the LAST one.
-Outside a group, focus the first or LAST stop of the modal scope."
+Outside a group, focus the first or LAST stop of the modal scope.
+ROOT restricts candidates and groups to its subtree, like
+`ebox-focus-direction'.  A root outside the mount signals `user-error'."
   (let* ((mount (ebox--mount-for buffer-or-name))
+         (scope (or root (ebox--focus-scope mount)))
+         (_ (unless (ebox--node-live-p scope mount)
+              (user-error "Ebox focus root is not mounted")))
          (current (ebox-focused-node buffer-or-name))
-         (group (and current (ebox--focus-group current (ebox--focus-scope mount))))
-         (stops (if group (ebox--group-members mount group) (ebox--tab-stops mount))))
+         (group (and current (not (eq current scope))
+                     (ebox-node-ancestor-p scope current)
+                     (ebox--focus-group current scope)))
+         (stops (if group (ebox--group-members mount group)
+                  (ebox--tab-stops mount scope))))
     (unless stops (user-error "No Ebox focus stop"))
     (ebox-focus (if last (car (last stops)) (car stops)) buffer-or-name)))
 

@@ -422,5 +422,48 @@
         (let ((live (eq second (car (ebox-test-backdrop-images (ebox-test-buffer-string))))))
           (should live))))))
 
+(ert-deftest ebox-backdrop-identity-preserves-partially-covered-glyphs ()
+  "A transparent hit strip keeps a straddling text glyph and its native input."
+  (let ((under-count 0) (over-count 0))
+    (ebox-test-with-mounted
+        (buffer root
+                (list 'column :width '(ch 12) :height '(lh 1)
+                      (list 'box :width 'stretch :height '(lh 1)
+                            :keymap (ebox-keymap-create :activate
+                                                       (lambda () (cl-incf under-count)))
+                            :pointer 'hand "A界B中C")
+                      (list 'box :position 'absolute :layer 'root
+                            :left '(ch 2) :top '(lh 0) :width '(ch 1) :height '(lh 1)
+                            :backdrop-filter '(brightness 1)
+                            :keymap (ebox-keymap-create :activate
+                                                       (lambda () (cl-incf over-count)))
+                            :pointer 'hdrag)))
+      (let ((strip (ebox-node-child root 1)))
+        (dolist (sample '((2 . "界") (1 . "界") (5 . "中") (4 . "中") (2 . "界")))
+          (ebox-node-put strip :left (list 'ch (car sample)))
+          (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-prefix-p "A界B中C" text)))
+          (goto-char (point-min))
+          (search-forward (cdr sample))
+          (backward-char)
+          (let* ((position (point))
+                 (owner (ebox-node-at position buffer))
+                 (map (get-text-property position 'keymap))
+                 (command (lookup-key map [mouse-1]))
+                 (last-input-event (list 'mouse-1
+                                         (list (selected-window) position '(0 . 0) 0))))
+            (let ((owned (eq owner strip))) (should owned))
+            (should (eq (get-text-property position 'pointer) 'hdrag))
+            (should (commandp command))
+            (call-interactively command)))
+        (should (= over-count 5))
+        (should (= under-count 0))
+        (ebox-node-put strip :visibility 'hidden)
+        (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+          (should (string-prefix-p "A界B中C" text)))
+        (goto-char (point-min))
+        (search-forward "界")
+        (should (eq (get-text-property (1- (point)) 'pointer) 'hand))))))
+
 (provide 'ebox-backdrop-filter-tests)
 ;;; ebox-backdrop-filter-tests.el ends here

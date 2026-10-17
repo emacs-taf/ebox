@@ -60,6 +60,11 @@
       "purpose": "Property updates retain separate adjacent native displays, publish the replacement keymap by identity and remove retired input properties."
     },
     {
+      "name": "ebox-focus-edge-respects-explicit-root-and-inner-groups",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Explicit edge-navigation roots contain candidates and groups, work when focus starts outside, and reject detached roots."
+    },
+    {
       "name": "ebox-remounted-subtree-restores-absolute-descendants",
       "file": "tests/ebox-mount-tests.el",
       "purpose": "Moving a retained tree into and out of a wrapper preserves its absolute descendants, native positions and subsequent child-list updates."
@@ -463,6 +468,11 @@
       "name": "ebox-render-visibility-hidden-preserves-layout-space",
       "file": "tests/ebox-rendering-tests.el",
       "purpose": "Hidden boxes suppress ink while preserving layout space in the rendered buffer."
+    },
+    {
+      "name": "ebox-backdrop-identity-preserves-partially-covered-glyphs",
+      "file": "tests/ebox-backdrop-filter-tests.el",
+      "purpose": "A uniform identity-filtered hit strip preserves whole straddling text glyphs, owns native activation, and restores underlying input after moving or hiding."
     },
     {
       "name": "ebox-backdrop-filter-keeps-text-and-dims-colors",

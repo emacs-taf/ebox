@@ -15,6 +15,8 @@ Ebox 的重要变化记录在这里。
 
 ### 新增
 
+- `ebox-focus-edge` 接受可选子树根，把 Home/End 式焦点移动及参与的焦点组限制在调用方指定的边界内。
+
 - 键盘焦点支持复合控件：`:focus-group`（`vertical`、`horizontal` 或 `grid`）使容器
   成为一个 Tab 停靠点，进入时落在选中或上次聚焦的成员上，并用方向键在内部移动；
   `:focus-scope modal` 把导航限制在打开的对话框内；`ebox-focus-direction` 移到某方向上
@@ -73,6 +75,9 @@ Ebox 的重要变化记录在这里。
   `ebox-node-set-states` 或 `ebox-node-restyle`；旧的显式 update grouping 对应 `ebox-with-batch`。
 
 ### 修复
+
+- 空白恒等滤镜热区的边缘穿过文字时保留完整字形，不再把部分字形替换为空格。
+  原生文字输入按整个字形归属，图像与空白仍精确到像素切片。
 
 - 指针悬停改为按节点自身的计算样式重绘整个节点，不再只画一条矩形文本带：
   悬停的控件保留 `:border-radius`，并覆盖全部内边距行；指针离开后在同样的行上

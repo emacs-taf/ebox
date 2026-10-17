@@ -21,6 +21,10 @@ All notable changes to Ebox are documented here.
 - Backdrop updates filter only the background spans they actually show and
   apply input ownership on the same owned copy, reducing transient allocation
   during modal search and editing without changing colors or hit isolation.
+- Blank identity-filtered hit surfaces preserve text glyphs crossed by their
+  edges instead of replacing partial glyphs with spaces. Native text input
+  uses whole-glyph ownership; image and space slices stay pixel-exact.
+
 - Filtered backdrops now dim PNG, JPEG and SVG pixels on graphical frames
   with SVG support, including native `currentColor` icons. Cached in-memory
   composites preserve alpha, image slices, row insets and the application
@@ -51,6 +55,9 @@ All notable changes to Ebox are documented here.
   overlay still refuses focus.
 
 ### Added
+
+- `ebox-focus-edge` accepts an optional subtree root, keeping Home/End-style
+  focus movement and participating focus groups inside a caller's boundary.
 
 - `ebox-mount` accepts an `:observer` installed before its first flush, so
   root replacement can keep complete paint timing and update reports.

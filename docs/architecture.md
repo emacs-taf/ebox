@@ -254,6 +254,10 @@ Composition first clips the background to the overlay's blank spans. Each borrow
 part is copied once, filtered and assigned the covering input properties on that
 owned copy; pixels hidden by the overlay's own content are not filtered. Shared
 source parts stay immutable, without a new cache of callback-bearing strings.
+A blank identity-filtered surface with uniform input ownership expands a cut
+through an unsliceable text unit to that unit's boundaries. It preserves the
+whole glyph and uses native whole-cell input ownership instead of replacing
+partial text with spaces; image and display-space cuts stay pixel-exact.
 Text filtering flattens inherited face lists and resolves canvas-remapped default
 colors. PNG, JPEG and SVG data descriptors use an in-memory SVG component-transfer
 composite, with sRGB channels multiplied while alpha stays unchanged. Raster

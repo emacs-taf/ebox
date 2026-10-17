@@ -2605,6 +2605,51 @@ Immutable image composites remain shared.  Paint performs no source I/O."
       (cl-incf position))
     blank))
 
+(defun ebox--backdrop-input-at (string position)
+  "Return the native input properties at POSITION in STRING."
+  (cl-loop for property in '(ebox-node keymap help-echo pointer mouse-face)
+           append (list property (get-text-property position property string))))
+
+(defun ebox--backdrop-uniform-blank (parts)
+  "Return a blank cell of PARTS when they have one uniform input owner.
+Return nil for painted content or differing native input properties."
+  (let (cell props (uniform t))
+    (dolist (string parts)
+      (unless (ebox--backdrop-filter-blank-p string) (setq uniform nil))
+      (let ((position 0) (length (length string)))
+        (while (and uniform (< position length))
+          (let ((input (ebox--backdrop-input-at string position)))
+            (if cell
+                (unless (cl-loop for (key value) on input by #'cddr
+                                 always (if (memq key '(ebox-node keymap))
+                                            (eq value (plist-get props key))
+                                          (equal value (plist-get props key))))
+                  (setq uniform nil))
+              (setq cell (substring string position (1+ position)) props input)))
+          (setq position (next-property-change position string length)))))
+    (and uniform cell)))
+
+(defun ebox--backdrop-text-boundary (parts x end)
+  "Keep pixel X unless it cuts an unsliceable display unit in PARTS.
+For such a unit return its start, or its end when END is non-nil.  Native
+images and display spaces remain pixel-sliceable.  Text hit ownership has
+Emacs's whole-glyph granularity, but an identity filter must not erase it."
+  (let ((px 0) (rest parts) (boundary x))
+    (while (and rest (< px x))
+      (let* ((string (pop rest)) (width (ebox--part-width string)))
+        (if (< x (+ px width))
+            (progn
+              (pcase-let ((`(,pos ,offset ,next ,unit-width)
+                           (ebox--px-cut string (- x px) 0 0)))
+                (let ((display (and next (get-text-property pos 'display string))))
+                  (when (and next
+                             (not (ebox--fixed-space-width display))
+                             (not (ebox-image--display-image display)))
+                    (setq boundary (+ px offset (if end unit-width 0))))))
+              (setq rest nil))
+          (setq px (+ px width)))))
+    boundary))
+
 (defun ebox--backdrop-cover-parts (parts cover filter)
   "Dim PARTS by FILTER and replace their native input properties with COVER's.
 A filtered overlay borrows paint, never the covered text's hit owner,
@@ -2615,8 +2660,7 @@ controls keep their own input identity.  Cached source strings are not mutated."
       (let* ((next (next-property-change position cover length))
              (width (ebox--part-width (substring cover position next)))
              (split (ebox--split-parts rest width))
-             (props (cl-loop for property in '(ebox-node keymap help-echo pointer mouse-face)
-                             append (list property (get-text-property position property cover)))))
+             (props (ebox--backdrop-input-at cover position)))
         (dolist (part (car split))
           (let ((copy (copy-sequence part)))
             (ebox--backdrop-filter-owned-string copy filter)
@@ -2704,6 +2748,15 @@ dims their colors instead of replacing them."
                     (ebox--over-backgrounds
                      segment (car (ebox--split-parts (cdr (ebox--split-parts parts x)) w)))))
             (when-let* ((filter (ebox--cv (ebox-node-cs node) 'ebox/backdrop-filter)))
+              ;; A transparent, uniform hit surface does not erase partial
+              ;; text glyphs.  Expand only unsliceable text units to their
+              ;; native cell boundaries; image/space slices remain exact.
+              (when-let* (((= (cadr filter) 1))
+                          (cell (ebox--backdrop-uniform-blank segment)))
+                (let ((start (ebox--backdrop-text-boundary parts x nil))
+                      (end (ebox--backdrop-text-boundary parts (+ x w) t)))
+                  (setq x start w (- end start)
+                        segment (list (ebox--unit-space w cell 0)))))
               (setq segment
                     (ebox--backdrop-filter-under
                      segment
