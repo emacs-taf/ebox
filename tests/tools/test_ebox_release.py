@@ -1,103 +1,110 @@
-"""Regression tests for deterministic packaging and dependency boundaries."""
-
-import importlib.util
+"""Public command contract of Ebox's pinned standalone release adapter."""
 import json
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
-from unittest import mock
 
-SPEC = importlib.util.spec_from_file_location("ebox_release", Path(__file__).resolve().parents[2] / "scripts" / "ebox-release.py")
-RELEASE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(RELEASE)
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class ReleaseTests(unittest.TestCase):
-    def test_lock_requires_exact_revisions_and_optional_provider_is_explicit(self):
-        lock = json.loads((RELEASE.ROOT / "release-dependencies.json").read_text())
-        self.assertEqual(set(RELEASE.lock_entries(lock)), {"ecss"})
-        self.assertEqual(set(RELEASE.lock_entries(lock, True)), {"ecss", "ekp"})
-        lock["dependencies"]["ecss"]["revision"] = "main"
-        with self.assertRaises(ValueError):
-            RELEASE.lock_entries(lock)
-
-    def test_archives_are_reproducible_source_complete_and_exclude_local_outputs(self):
-        with tempfile.TemporaryDirectory() as work:
-            root = Path(work) / "source"
-            root.mkdir()
-            (root / "lisp").mkdir()
-            subprocess.run(["git", "init", "-q", str(root)], check=True)
-            (root / "ebox.el").write_text(';;; ebox.el --- Test -*- lexical-binding: t -*-\n;; Version: 3.0.0\n;; Package-Requires: ((emacs "29.1"))\n')
-            (root / "LICENSE").write_text("license")
-            (root / "lisp/ebox-runtime.el").write_text("(provide 'ebox-runtime)")
-            (root / "docs").mkdir()
-            (root / "docs/manual.md").write_text("manual")
-            (root / "docs/target").mkdir()
-            (root / "docs/target/private.elc").write_text("exclude")
-            (root / "ebox.elc").write_text("stale bytecode")
-            first, second = Path(work) / "first", Path(work) / "second"
-            first.mkdir()
-            second.mkdir()
-            one = RELEASE.write_package(first, root, "ebox")
-            (root / "ebox.el").touch()
-            two = RELEASE.write_package(second, root, "ebox")
-            self.assertEqual(one["sha256"], two["sha256"])
-            with tarfile.open(first / one["file"]) as archive:
-                names = archive.getnames()
-                self.assertIn("ebox-3.0.0/LICENSE", names)
-                self.assertIn("ebox-3.0.0/docs/manual.md", names)
-                self.assertIn("ebox-3.0.0/ebox-pkg.el", names)
-                self.assertIn("ebox-3.0.0/ebox.el", names)
-                self.assertIn("ebox-3.0.0/lisp/ebox-runtime.el", names)
-                self.assertFalse(any("target/" in name or name.endswith(".elc") for name in names))
-                self.assertTrue(all(member.mtime == 0 for member in archive.getmembers()))
-
-    def test_existing_output_is_preserved(self):
-        with tempfile.TemporaryDirectory() as work:
-            directory = Path(work)
-            sentinel = directory / "keep"
-            sentinel.write_text("owned")
-            with self.assertRaises(ValueError):
-                RELEASE.checkout_dependencies(directory, {})
-            with self.assertRaises(ValueError):
-                RELEASE.build(directory, directory, directory, {})
-            self.assertEqual(sentinel.read_text(), "owned")
-
-    def test_modified_archive_fails_before_emacs_runs(self):
-        with tempfile.TemporaryDirectory() as work:
-            directory = Path(work)
-            (directory / "bad.tar").write_bytes(b"changed")
-            (directory / "manifest.json").write_text(json.dumps({"packages": [{"file": "bad.tar", "sha256": "wrong"}]}))
-            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
-                RELEASE.verify(directory, "must-not-run")
-
-    def test_failed_fetch_removes_temporary_checkout_and_never_creates_output(self):
-        with tempfile.TemporaryDirectory() as work:
-            parent = Path(work)
-            output = parent / "deps"
-            with mock.patch.object(RELEASE, "run", side_effect=RuntimeError("fetch failed")):
-                with self.assertRaisesRegex(RuntimeError, "fetch failed"):
-                    RELEASE.checkout_dependencies(output, {"ecss": {"url": "https://invalid", "revision": "0" * 40}})
-            self.assertEqual(list(parent.iterdir()), [])
-
-    def test_dependency_validation_rejects_modified_checkout(self):
-        with tempfile.TemporaryDirectory() as work:
-            root = Path(work)
-            dependency = root / "ecss"
-            dependency.mkdir()
-            subprocess.run(["git", "init", "-q", str(dependency)], check=True)
-            (dependency / "ecss.el").write_text("original")
-            subprocess.run(["git", "add", "ecss.el"], cwd=dependency, check=True)
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.root = self.base / "ebox"
+        self.dependencies = self.base / "deps"
+        self.lock = {"schema": 1, "dependencies": {}, "optional": {}}
+        for name, version in (("ebox", "3.0.0"), ("ecss", "0.1.0"), ("ekp", "1.0.0")):
+            source = self.root if name == "ebox" else self.dependencies / name
+            source.mkdir(parents=True)
+            (source / f"{name}.el").write_text(
+                f';;; -*- lexical-binding: t; -*-\n;;; {name}.el --- Release fixture\n'
+                f';; Version: {version}\n;; Package-Requires: ((emacs "29.1"))\n'
+                f"(provide '{name})\n")
+            (source / "LICENSE").write_text("Fixture license\n")
+            if name == "ebox":
+                (source / "docs").mkdir()
+                (source / "docs/architecture.md").write_text("# Architecture\n")
+            if name == "ekp":
+                for directory in ("native", "dictionaries"):
+                    (source / directory).mkdir()
+                    (source / directory / "COPYING").write_text("Fixture license\n")
+            subprocess.run(["git", "init", "-q", str(source)], check=True)
+            subprocess.run(["git", "add", "."], cwd=source, check=True)
             subprocess.run(["git", "-c", "user.name=Release Test", "-c", "user.email=release@example.invalid",
-                            "commit", "-qm", "fixture"], cwd=dependency, check=True)
-            revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=dependency).decode().strip()
-            entries = {"ecss": {"revision": revision}}
-            RELEASE.validate_dependencies(root, entries)
-            (dependency / "ecss.el").write_text("modified")
-            with self.assertRaisesRegex(ValueError, "dependency must be clean"):
-                RELEASE.validate_dependencies(root, entries)
+                            "commit", "-qm", "fixture"], cwd=source, check=True)
+            revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+            if name != "ebox":
+                section = "optional" if name == "ekp" else "dependencies"
+                self.lock[section][name] = {"url": f"https://example.invalid/{name}.git", "revision": revision}
+        (self.root / "release-dependencies.json").write_text(json.dumps(self.lock))
+        (self.root / "scripts").mkdir()
+        for name in ("ebox-release.py", "package_archive.py"):
+            shutil.copy2(ROOT / "scripts" / name, self.root / "scripts" / name)
+        self.command = [sys.executable, str(self.root / "scripts/ebox-release.py")]
+
+    def call(self, *arguments, success=True):
+        result = subprocess.run([*self.command, *map(str, arguments)], text=True,
+                                capture_output=True, timeout=30)
+        self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+        return result
+
+    def build(self, output, *extra, success=True):
+        return self.call("build", "--directory", output, "--dependencies", self.dependencies,
+                         *extra, success=success)
+
+    def test_default_release_keeps_standalone_boundary_and_is_reproducible(self):
+        first, second = self.base / "first", self.base / "second"
+        self.build(first)
+        self.build(second)
+        manifest = json.loads((first / "manifest.json").read_text())
+        self.assertEqual({p["name"] for p in manifest["packages"]}, {"ecss", "ebox"})
+        for package in manifest["packages"]:
+            self.assertEqual((first / package["file"]).read_bytes(), (second / package["file"]).read_bytes())
+        with tarfile.open(first / "ebox-3.0.0.tar") as archive:
+            self.assertIn("ebox-3.0.0/docs/architecture.md", archive.getnames())
+            self.assertIn("ebox-3.0.0/LICENSE", archive.getnames())
+
+    def test_optional_ekp_includes_its_runtime_resources_only_when_selected(self):
+        output = self.base / "optional"
+        self.build(output, "--with-ekp")
+        with tarfile.open(output / "ekp-1.0.0.tar") as archive:
+            self.assertIn("ekp-1.0.0/dictionaries/COPYING", archive.getnames())
+            self.assertIn("ekp-1.0.0/native/COPYING", archive.getnames())
+
+    def test_modified_or_wrong_revision_dependency_is_rejected_before_build(self):
+        output = self.base / "archive"
+        entry = self.dependencies / "ecss/ecss.el"
+        entry.write_text(entry.read_text() + "; modified\n")
+        result = self.build(output, success=False)
+        self.assertIn("dependency must be clean", result.stderr)
+        self.assertFalse(output.exists())
+
+    def test_existing_dependency_and_archive_outputs_are_preserved(self):
+        output = self.base / "archive"
+        self.build(output)
+        before = (output / "ebox-3.0.0.tar").read_bytes()
+        self.build(output, success=False)
+        self.call("deps", "--directory", self.dependencies, success=False)
+        self.assertEqual(before, (output / "ebox-3.0.0.tar").read_bytes())
+
+    def test_symbolic_revisions_are_rejected_without_network_access(self):
+        self.lock["dependencies"]["ecss"]["revision"] = "main"
+        (self.root / "release-dependencies.json").write_text(json.dumps(self.lock))
+        result = self.build(self.base / "archive", success=False)
+        self.assertIn("full commit hash", result.stderr)
+
+    def test_modified_archive_is_rejected_before_starting_emacs(self):
+        output = self.base / "archive"
+        self.build(output)
+        (output / "ebox-3.0.0.tar").write_bytes(b"corrupt")
+        result = self.call("verify", "--directory", output, "--emacs", "must-not-start", success=False)
+        self.assertIn("checksum mismatch", result.stderr)
 
 
 if __name__ == "__main__":
