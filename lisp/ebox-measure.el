@@ -62,6 +62,21 @@ ignore paint-only remaps so independent backgrounds share glyph metrics."
 (defvar ebox--measure-frame nil
   "Explicit frame for an image preparation, or nil for the buffer's display.")
 
+(defun ebox--measuring-window ()
+  "Return the window whose frame decides display metrics.
+Use an explicitly bound measuring frame, then a window showing the current
+buffer, then the selected window."
+  (if ebox--measure-frame
+      (frame-selected-window ebox--measure-frame)
+    (or (get-buffer-window (current-buffer) t) (selected-window))))
+
+(defun ebox--text-display-p ()
+  "Return non-nil when layout targets character cells, not graphical pixels.
+Read the frame of the window the current buffer is displayed in, or the
+selected window when it is hidden.  Terminals cannot render font metrics
+such as a larger font size, so callers substitute an attribute they support."
+  (null (window-system (window-frame (ebox--measuring-window)))))
+
 (defun ebox-display-metrics (&optional buffer-or-name)
   "Return BUFFER-OR-NAME's effective default-face metrics as a fresh plist.
 Default to the current buffer.  :char-width and :line-height are positive
@@ -76,8 +91,7 @@ An unknown buffer signals `error'."
 The returned plist belongs to the measuring layer and must not be changed."
   (with-current-buffer (or buffer-or-name (current-buffer))
     (let* ((ebox--measure-buffer (current-buffer))
-           (window (if ebox--measure-frame (frame-selected-window ebox--measure-frame)
-                     (or (get-buffer-window (current-buffer) t) (selected-window))))
+           (window (ebox--measuring-window))
            (frame (window-frame window))
            ;; Text displays have unit cells, not a font whose metrics need
            ;; probing.  Avoid allocating the terminal face description.

@@ -425,6 +425,16 @@
       "purpose": "Borders render as display spaces carrying visible border face attributes."
     },
     {
+      "name": "ebox-render-text-display-fills-a-blank-top-border-row",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "On a text terminal a blank top border row is filled with the border color, because the overline face attribute cannot draw it; a content row keeps only the decoration."
+    },
+    {
+      "name": "ebox-render-text-display-maps-a-font-size-increase-to-bold",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "A text terminal cannot render a larger font size, so a node that raises its size takes bold weight and its children inherit it, while a root-level size change stays unemphasized."
+    },
+    {
       "name": "ebox-render-side-borders-paint-their-width",
       "file": "tests/ebox-rendering-tests.el",
       "purpose": "Left and right borders paint their declared pixel width; top and bottom borders are limited to 1px."

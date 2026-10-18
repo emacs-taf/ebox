@@ -923,9 +923,24 @@ measure text alike."
         (setq tail (cddr tail)))
       (nconc (nreverse head) (nreverse rest)))))
 
+(defun ebox--text-size-emphasis (vals parent)
+  "Return VALS, made bold when a text display raises the font size.
+A terminal has one face size, so a larger size cannot render.  The node that
+raises the size takes bold weight instead, and children inherit it through
+the normal font-weight cascade.  Graphical frames return VALS unchanged."
+  (let ((size (plist-get vals 'ebox/font-size))
+        (base (and parent (or (ebox--cv parent 'ebox/font-size) 16)))
+        (weight (plist-get vals 'ebox/font-weight)))
+    (if (and (ebox--text-display-p)
+             (numberp size) (numberp base) (> size (* base 1.15))
+             (memq weight '(nil normal)))
+        (plist-put (copy-sequence vals) 'ebox/font-weight 'bold)
+      vals)))
+
 (defun ebox--make-cs (vals parent tag)
   "Build a computed style from ECSS VALS under PARENT for TAG."
-  (let* ((font (ebox--font-group vals parent))
+  (let* ((vals (ebox--text-size-emphasis vals parent))
+         (font (ebox--font-group vals parent))
          (vals (ebox--hot-first (plist-put vals 'ebox--css-weight (cdr font))))
          (color (plist-get vals 'ebox/color))
          (color (if (eq color 'currentColor) nil color))

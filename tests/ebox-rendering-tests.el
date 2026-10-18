@@ -69,6 +69,46 @@ def"))
       (should (equal (cl-some (lambda (entry) (plist-get entry :underline)) face)
                      '(:position t :color "#ff0000"))))))
 
+(ert-deftest ebox-render-text-display-fills-a-blank-top-border-row ()
+  "A terminal cannot draw an overline, so a blank top border row is filled.
+The row keeps its overline for displays that support it, and a top row that
+carries content keeps only the decoration."
+  (cl-labels ((faces (value)
+                (if (and (listp value) (keywordp (car value)))
+                    (list value)
+                  value)))
+    (let* ((rendered (ebox-render
+                      '(box :width (px 10)
+                            :padding '((lh 1) (ch 0))
+                            :border ((px 1) solid "#ff0000")
+                            "Hi")))
+           (top (faces (get-text-property 1 'face rendered)))
+           (body (1+ (length (nth 0 (split-string rendered "\n"))))))
+      (should (equal (plist-get (car top) :background) "#ff0000"))
+      (should (cl-some (lambda (face) (equal (plist-get face :overline) "#ff0000"))
+                       top))
+      (should-not (plist-get (get-text-property (1+ body) 'face rendered)
+                             :background)))
+    (let* ((rendered (ebox-render
+                      '(box :width (px 10) :border ((px 1) solid "#ff0000") "Hi")))
+           (top (faces (get-text-property 1 'face rendered))))
+      (should-not (cl-some (lambda (face) (plist-get face :background)) top))
+      (should (cl-some (lambda (face) (equal (plist-get face :overline) "#ff0000"))
+                       top)))))
+
+(ert-deftest ebox-render-text-display-maps-a-font-size-increase-to-bold ()
+  "A terminal has one face size, so a raised size becomes bold weight.
+The raised node's children inherit the weight, while a root-level size change
+is the application's global choice and stays unemphasized."
+  (let* ((rendered (ebox-render '(column (text "body")
+                                          (box :font-size 24 (text "head")))))
+         (head (1+ (length (nth 0 (split-string rendered "\n"))))))
+    (should (eq (plist-get (get-text-property head 'face rendered) :weight) 'bold))
+    (should-not (plist-get (get-text-property 0 'face rendered) :weight))
+    (should-not (plist-get (get-text-property 0 'face
+                                              (ebox-render '(text :font-size 24 "root")))
+                           :weight))))
+
 (ert-deftest ebox-render-side-borders-paint-their-width ()
   (let ((rendered (ebox-render
                    '(box :width (px 10) :height (lh 1)

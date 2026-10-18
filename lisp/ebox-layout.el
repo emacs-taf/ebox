@@ -2194,10 +2194,18 @@ is then joined into one string."
             (setq line (ebox--join-fresh line))
             (puthash line (ebox-geo-bw geo) ebox--part-widths)
             (when top
-              (add-face-text-property 0 (length line)
-                                      (list :overline (let ((c (ebox-cs-btc cs)))
-                                                       (if (eq c 'default) t c)))
-                                      t line))
+              (let ((c (ebox-cs-btc cs)))
+                ;; A terminal has no overline face attribute, so a hairline
+                ;; above blank padding would disappear.  Fill that row with
+                ;; the border color there; the overline stays for displays
+                ;; that can draw it.
+                (when (and (ebox--text-display-p)
+                           (not (eq c 'default))
+                           (ebox--background-cells-p line))
+                  (add-face-text-property 0 (length line) (list :background c) nil line))
+                (add-face-text-property 0 (length line)
+                                        (list :overline (if (eq c 'default) t c))
+                                        t line)))
             (when bottom
               (add-face-text-property 0 (length line)
                                       (list :underline

@@ -6,6 +6,12 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- 终端 frame 没有 overline face 属性，空白的上边框行改为填充边框颜色，
+  卡片和窗口在终端上不再缺失上沿；有内容的行保持原样。
+
+- 终端只有一个字号，提高字号的节点改用粗体渲染，子节点按字重继承；
+  根节点改变字号属于应用的全局选择，不加粗。
+
 - Text measurement works on Emacs 29 and 30, where `string-pixel-width`
   accepts no buffer.  Ebox measures in a work buffer that copies the
   measuring buffer's face remapping and default text properties, so text
