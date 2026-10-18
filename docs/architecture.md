@@ -229,7 +229,11 @@ Interaction decoration happens during composition.  Ebox fills absent `ebox-node
 explicit node wins and ancestor keymaps cover descendants that do not override
 them.  An inner node's explicit nil is painted as a present property, so it
 blocks the ancestor's value instead of inheriting it. The owning node caches
-its decoration to keep hover-face identity stable across rows. Replacing
+its decoration to keep hover-face identity stable across rows.  The native
+mouse face starts from the node's computed face and applies the hover
+declarations over it, because a display uses `mouse-face' instead of the text's
+`face': a hover style that only names a fill therefore keeps the label's ink,
+weight and decoration instead of falling back to the frame's default face. Replacing
 authored properties immediately clears that cache, including for hidden nodes
 that will not compose another line. No global cache owns callback-bearing
 interaction plists after their node or authored capabilities are retired.

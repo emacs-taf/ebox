@@ -38,11 +38,25 @@
 
 ;;;; Text properties of interactive nodes
 
-(defun ebox--hover-face (value)
-  "Return the native mouse face for :hover-style VALUE."
+(defun ebox--face-plist (face)
+  "Return FACE, a plist or a list of plists, as one plist."
+  (cond ((null face) nil)
+        ((keywordp (car-safe face)) face)
+        (t (apply #'append (delq nil face)))))
+
+(defun ebox--hover-face (node value)
+  "Return the native mouse face for NODE with :hover-style VALUE.
+Emacs displays `mouse-face' instead of the text's `face' while the pointer is
+over the node, so a hover face carrying only VALUE would drop everything else
+NODE paints; a background-only hover style would then lose the label colour and
+the text would fall back to the frame's default face.  Start from NODE's
+computed face, apply VALUE over it, and intern the result so equal rows share
+one face object."
   (unless (and (proper-list-p value) (zerop (% (length value) 2)))
     (signal 'ebox-error (list "Ebox :hover-style must be an even plist" value)))
-  (let (face)
+  (let* ((cs (ebox-node-cs node))
+         ;; `plist-put' mutates, and the resting face is interned and shared.
+         (face (copy-sequence (ebox--face-plist (and cs (ebox-cs-face cs))))))
     (cl-loop for (key val) on value by #'cddr do
              (unless (memq key ebox--hover-properties)
                (signal 'ebox-error (list "Ebox :hover-style does not support" key)))
@@ -64,7 +78,7 @@
                   (setq face (plist-put face :underline
                                         (list :color (if (eq val 'currentColor)
                                                          'foreground-color val))))))))
-    face))
+    (ebox--intern-face face)))
 
 (defvar ebox--empty-keymap (make-sparse-keymap)
   "Keymap that blocks an ancestor's keymap on explicit nil.")
@@ -93,6 +107,7 @@
           (setq props (append props (list 'mouse-face
                                           (and (plist-get inter :hover-style)
                                                (ebox--hover-face
+                                                node
                                                 (plist-get inter :hover-style)))))))
         (setf (ebox-node-inter-cache node) props))))
 

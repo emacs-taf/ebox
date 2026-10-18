@@ -715,7 +715,9 @@ BG, DECO and HIDDEN are the derived paint state children inherit too."
 (defconst ebox--hover-properties
   '(:color :background-color :font-weight :font-style :text-decoration-line
     :text-decoration-style :text-decoration-color)
-  "Paint properties accepted by :hover-style.")
+  "Paint properties accepted by :hover-style.
+They override the node's computed paint in the native hover face, which restates
+that paint first; a declaration left out keeps the node's own value.")
 
 (defun ebox--hover-declarations (value)
   "Return :hover-style VALUE as canonical Ebox paint declarations.

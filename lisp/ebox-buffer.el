@@ -464,7 +464,9 @@ geometry inputs only marks it for repainting."
         (setf (ebox-node-dirty node) (logand (ebox-node-dirty node) (lognot ebox--d-style)))
         (unless (eq old new)
           (setq changed t)
-          (setf (ebox-node-cs node) new)
+          ;; The hover face restates this paint, so a restyled node must rebuild it.
+          (setf (ebox-node-cs node) new
+                (ebox-node-inter-cache node) nil)
           ;; A restyled node can sit below unchanged ancestors, so layout and
           ;; painting must find it through the dirty path.
           (when old (ebox--mark-path node))

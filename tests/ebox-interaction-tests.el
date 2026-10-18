@@ -500,6 +500,25 @@ line lies under an unrelated overlay; focus reveals it."
       (should-not (get-text-property own 'pointer))
       (should-not (get-text-property own 'mouse-face)))))
 
+(ert-deftest ebox-hover-face-restates-the-nodes-own-paint ()
+  "A background-only hover style keeps the label readable.
+Emacs displays `mouse-face' instead of the text's `face', so a face built from
+the hover style alone drops the node's own ink and the label falls back to the
+frame's default colour.  The hover face starts from the computed face instead,
+so the resting paint stays intact."
+  (let* ((rendered (ebox-render '(box :color "#E9ECF1" :background-color "#0E1013"
+                                       :hover-style (:background-color "#1B1F26")
+                                       "Ink")))
+         (hover (get-text-property 0 'mouse-face rendered)))
+    (should (equal (plist-get hover :foreground) "#E9ECF1"))
+    (should (equal (plist-get hover :background) "#1B1F26"))
+    ;; A hover style that names its own ink still wins.
+    (let* ((own (ebox-render '(box :color "#E9ECF1"
+                                   :hover-style (:color "#FF0000")
+                                   "Ink")))
+           (face (get-text-property 0 'mouse-face own)))
+      (should (equal (plist-get face :foreground) "#FF0000")))))
+
 (ert-deftest ebox-hover-paints-over-a-nodes-own-background ()
   ;; Hover paint is unconditional: whether a selected element keeps its own
   ;; surface is application policy (declare :hover-style nil for it), because

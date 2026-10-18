@@ -315,6 +315,11 @@
       "purpose": "Hover paint covers a node's own background too; suppressing hover for a selected item is application policy, not an engine guess."
     },
     {
+      "name": "ebox-hover-face-restates-the-nodes-own-paint",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "The native hover face keeps the node's own ink and decoration, so a background-only hover style cannot leave unreadable text, while an explicit hover colour still wins."
+    },
+    {
       "name": "ebox-hover-spans-every-row-of-a-multiline-node",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Hover feedback joins every row of a multirow element into one mouse-face run instead of highlighting only the pointer's row."
