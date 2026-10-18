@@ -233,7 +233,13 @@ its decoration to keep hover-face identity stable across rows.  The native
 mouse face starts from the node's computed face and applies the hover
 declarations over it, because a display uses `mouse-face' instead of the text's
 `face': a hover style that only names a fill therefore keeps the label's ink,
-weight and decoration instead of falling back to the frame's default face. Replacing
+weight and decoration instead of falling back to the frame's default face.
+
+Every state face follows that rule: the state style declares only the
+properties it changes, and the native face restates the node's own ink, weight,
+slant and decoration.  The resting face is shared and interned, so a state face
+copies it before applying overrides; a restyle therefore clears the decoration
+cache and rebuilds the face instead of keeping the previous colour. Replacing
 authored properties immediately clears that cache, including for hidden nodes
 that will not compose another line. No global cache owns callback-bearing
 interaction plists after their node or authored capabilities are retired.

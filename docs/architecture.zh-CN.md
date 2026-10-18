@@ -170,6 +170,9 @@ display。Emacs 会合并相邻且 `display` 对象 `eq` 的字符，因此 `ebo
 交互 decoration 在 composition 中发生。Ebox 填充未设置的 `ebox-node`、`keymap`、`help-echo`、`pointer` 和
 `mouse-face` property，使最内层显式节点胜出，ancestor keymap 覆盖未 override 的 descendant。
 节点拥有自己的装饰缓存，使 hover face 在多行之间保持同一对象。原生 mouse face 先取节点计算出的 face，再叠加 hover 声明：显示时 `mouse-face` 会**替代**文本的 `face`，所以只声明填充色的 hover 样式仍保留标签的墨色、字重与装饰，不会回落到 frame 默认前景。
+所有状态 face 都遵循这条规则：状态样式只声明它要改的属性，原生 face 复述节点自己的墨色、
+字重、斜体与装饰；静止 face 是共享并 intern 的对象，状态 face 先复制再叠加覆盖。样式变化
+因此会清掉装饰缓存并重建 face，而不是保留上一次的颜色。
 替换声明属性时立即清空缓存，包括不再组合新行的隐藏节点；节点或声明能力退役后，
 没有全局缓存继续持有这些包含回调的交互属性。
 
