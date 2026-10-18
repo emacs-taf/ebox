@@ -226,16 +226,16 @@ keyboard macros reach it."
       (should (equal (reverse changes) '("abcx" "abcxy")))
       ;; The value wraps inside the padded box and the box grows.
       (should (equal (ebox-test-buffer-text buffer)
-                     "top \n  abcx   \n  y    \nbottom "))
+                     "top \n│ abcx │ \n│ y  │ \nbottom "))
       (execute-kbd-macro (kbd "DEL"))
-      (should (equal (ebox-test-buffer-text buffer) "top \n  abcx   \nbottom "))
+      (should (equal (ebox-test-buffer-text buffer) "top \n│ abcx │ \nbottom "))
       ;; The <backspace> key deletes too, although the buffer binds it to scroll.
       (execute-kbd-macro [backspace])
       (should (equal (ebox-input-text session) "abc"))
       (execute-kbd-macro "x")
       (should (equal (ebox-input-end session) "abcx"))
       (should-not (ebox-input-active-p buffer))
-      (should (equal (ebox-test-buffer-text buffer) "top \n  abcx   \nbottom ")))))
+      (should (equal (ebox-test-buffer-text buffer) "top \n│ abcx │ \nbottom ")))))
 
 (ert-deftest ebox-input-session-runs-native-editing-commands-on-the-value ()
   (ebox-test-with-session (buffer root '(column (text :id "field" "one two")) session)

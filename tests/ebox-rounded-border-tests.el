@@ -75,27 +75,20 @@
         (should (string-match-p "60\\.183 seconds" (ebox-test-buffer-text buffer)))))))
 
 (ert-deftest ebox-rounded-frame-paints-only-its-outer-horizontal-edges ()
-  "Top and bottom decoration must not leak into shared blank row cells."
+  "A square text frame paints only its outer horizontal edges."
   (ebox-test-with-mounted
       (buffer _root
               '(box :width (ch 24) :padding ((lh 1) (ch 2))
                     :background-color "#f8fafc"
                     :border ((px 1) solid "#b7c4d5")
                     :border-radius (px 7) "60.183"))
-    (let (edges)
-      (goto-char (point-min))
-      (dotimes (_ 3)
-        (let ((start (line-beginning-position)) (end (line-end-position)))
-          (push (mapcar
-                 (lambda (attribute)
-                   (and (cl-loop for position from start below end
-                                 thereis (memq attribute
-                                               (flatten-tree
-                                                (get-text-property position 'face))))
-                        t))
-                 '(:overline :underline))
-                edges))
-        (forward-line 1))
-      (should (equal (nreverse edges) '((t nil) (nil nil) (nil t)))))))
+    (let* ((lines (split-string (ebox-test-buffer-text buffer) "\n"))
+           (first (substring (nth 0 lines) 0 1))
+           (middle (substring (nth 1 lines) 0 1))
+           (last (substring (nth 2 lines) 0 1)))
+      (should (equal first "┌"))
+      (should (equal middle "│"))
+      (should (equal last "└"))
+      (should (string-match-p "60\\.183" (nth 1 lines))))))
 
 ;;; ebox-rounded-border-tests.el ends here

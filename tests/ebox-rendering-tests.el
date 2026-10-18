@@ -56,45 +56,42 @@ def"))
     (should (equal (get-text-property 2 'display rendered)
                    '(space :width (8))))))
 
-(ert-deftest ebox-render-border-uses-display-spaces-and-border-faces ()
+(ert-deftest ebox-render-text-border-draws-rules-and-keeps-decorations ()
+  "A text frame draws side borders as rules, not as filled cells.
+The top and bottom decorations stay on the line that carries them."
   (let ((rendered (ebox-render
                    '(box :width (px 10) :height (lh 1)
                          :border ((px 1) solid "#ff0000")
                          "Hi"))))
-    (should (equal (substring-no-properties rendered) " Hi  "))
-    (should (equal (get-text-property 0 'display rendered) '(space :width (1))))
-    (let ((face (get-text-property 0 'face rendered)))
-      (should (equal (plist-get (car face) :background) "#ff0000"))
-      (should (equal (plist-get (cadr face) :overline) "#ff0000"))
-      (should (equal (cl-some (lambda (entry) (plist-get entry :underline)) face)
-                     '(:position t :color "#ff0000"))))))
+    (should (equal (substring-no-properties rendered) "│Hi │"))
+    (should (eq (aref rendered 0) ?│))
+    (should (cl-some (lambda (face) (equal (plist-get face :foreground) "#ff0000"))
+                     (ebox-test-face-plists (get-text-property 0 'face rendered))))
+    (should (cl-some (lambda (face) (equal (plist-get face :overline) "#ff0000"))
+                     (ebox-test-face-plists (get-text-property 1 'face rendered))))
+    (should (cl-some (lambda (face) (plist-get face :underline))
+                     (ebox-test-face-plists (get-text-property 1 'face rendered))))))
 
-(ert-deftest ebox-render-text-display-fills-a-blank-top-border-row ()
-  "A terminal cannot draw an overline, so a blank top border row is filled.
-The row keeps its overline for displays that support it, and a top row that
-carries content keeps only the decoration."
-  (cl-labels ((faces (value)
-                (if (and (listp value) (keywordp (car value)))
-                    (list value)
-                  value)))
-    (let* ((rendered (ebox-render
-                      '(box :width (px 10)
-                            :padding '((lh 1) (ch 0))
-                            :border ((px 1) solid "#ff0000")
-                            "Hi")))
-           (top (faces (get-text-property 1 'face rendered)))
-           (body (1+ (length (nth 0 (split-string rendered "\n"))))))
-      (should (equal (plist-get (car top) :background) "#ff0000"))
-      (should (cl-some (lambda (face) (equal (plist-get face :overline) "#ff0000"))
-                       top))
-      (should-not (plist-get (get-text-property (1+ body) 'face rendered)
-                             :background)))
-    (let* ((rendered (ebox-render
-                      '(box :width (px 10) :border ((px 1) solid "#ff0000") "Hi")))
-           (top (faces (get-text-property 1 'face rendered))))
-      (should-not (cl-some (lambda (face) (plist-get face :background)) top))
-      (should (cl-some (lambda (face) (equal (plist-get face :overline) "#ff0000"))
-                       top)))))
+(ert-deftest ebox-render-text-display-draws-a-box-frame ()
+  "A blank border row becomes a box-drawing frame on a text display.
+The frame keeps the border box width, so layout does not change."
+  (let* ((rendered (ebox-render
+                    '(box :width (px 10)
+                          :padding '((lh 1) (ch 0))
+                          :border ((px 1) solid "#ff0000")
+                          "Hi")))
+         (lines (mapcar #'substring-no-properties (split-string rendered "\n"))))
+    (should (equal (nth 0 lines) "┌────────┐"))
+    (should (equal (nth 2 lines) "└────────┘"))
+    (should (eq (aref (nth 1 lines) 0) ?│))
+    (should (eq (aref (nth 1 lines) (1- (length (nth 1 lines)))) ?│)))
+  ;; A content row keeps its decoration instead of a frame.
+  (let* ((rendered (ebox-render
+                    '(box :width (px 10) :border ((px 1) solid "#ff0000") "Hi")))
+         (line (car (split-string rendered "\n"))))
+    (should (eq (aref line 0) ?│))
+    (should (cl-some (lambda (face) (equal (plist-get face :overline) "#ff0000"))
+                     (ebox-test-face-plists (get-text-property 1 'face rendered))))))
 
 (ert-deftest ebox-render-text-display-maps-a-font-size-increase-to-bold ()
   "A terminal has one face size, so a raised size becomes bold weight.
@@ -114,11 +111,10 @@ is the application's global choice and stays unemphasized."
                    '(box :width (px 10) :height (lh 1)
                          :border-left ((px 3) solid "#00ff00")
                          "Hi"))))
-    (should (equal (substring-no-properties rendered) " Hi "))
-    (should (equal (get-text-property 0 'display rendered) '(space :width (3))))
-    (let ((face (get-text-property 0 'face rendered)))
-      (should (equal (plist-get (if (keywordp (car face)) face (car face)) :background)
-                     "#00ff00"))))
+    (should (equal (substring-no-properties rendered) "│ Hi "))
+    (should (eq (aref rendered 0) ?│))
+    (should (equal (plist-get (get-text-property 0 'face rendered) :foreground)
+                   "#00ff00")))
   (should-error (ebox-render '(box :border-top ((px 2) solid "#00ff00") "Hi"))
                 :type 'ebox-error))
 

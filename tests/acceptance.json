@@ -420,14 +420,14 @@
       "purpose": "Adjacent characters sharing one display value keep every glyph on the line."
     },
     {
-      "name": "ebox-render-border-uses-display-spaces-and-border-faces",
+      "name": "ebox-render-text-border-draws-rules-and-keeps-decorations",
       "file": "tests/ebox-rendering-tests.el",
-      "purpose": "Borders render as display spaces carrying visible border face attributes."
+      "purpose": "A text frame draws side borders as one-cell rules instead of filled cells, and keeps the overline and underline decorations on the row that carries them."
     },
     {
-      "name": "ebox-render-text-display-fills-a-blank-top-border-row",
+      "name": "ebox-render-text-display-draws-a-box-frame",
       "file": "tests/ebox-rendering-tests.el",
-      "purpose": "On a text terminal a blank top border row is filled with the border color, because the overline face attribute cannot draw it; a content row keeps only the decoration."
+      "purpose": "A blank top or bottom border row becomes a box-drawing frame of the same width on a text display; a content row keeps its decoration instead."
     },
     {
       "name": "ebox-render-text-display-maps-a-font-size-increase-to-bold",

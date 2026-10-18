@@ -352,6 +352,80 @@ SOURCE is the text node a string displays, or a pad's pixel width."
   "Return the side border face for COLOR."
   (ebox--intern-face (list :background (if (eq color 'default) "gray50" color))))
 
+(defvar ebox--text-border-rules 'unknown
+  "Cached answer to whether a terminal draws box rules one cell wide.")
+
+(defun ebox--text-border-rules-p ()
+  "Return non-nil when a terminal frame draws box rules one cell wide.
+Box-drawing characters are East Asian ambiguous: terminals draw them one
+cell wide, so use them only where the width table agrees."
+  (if (eq ebox--text-border-rules 'unknown)
+      (setq ebox--text-border-rules
+            (and (ebox--text-display-p) (= 1 (string-width "─"))))
+    ebox--text-border-rules))
+
+(defun ebox--text-border-face (color bg)
+  "Return a face painting COLOR as text on background BG."
+  (let ((fg (if (eq color 'default) (face-foreground 'default nil t) color)))
+    (if bg (list :foreground fg :background bg) (list :foreground fg))))
+
+(defun ebox--border-side (width color side bgface)
+  "Return a WIDTH-cell vertical border on SIDE painted with COLOR.
+A graphical frame fills the cells; a text frame draws one rule on the outer
+edge over the background of BGFACE."
+  (if (not (ebox--text-border-rules-p))
+      (ebox--space width (ebox--border-face color))
+    (let* ((bg (ebox--face-background bgface))
+           (rule (propertize "│" 'face (ebox--text-border-face color bg)))
+           (pad (ebox--space (max 0 (1- width))
+                             (and bg (ebox--intern-face (list :background bg))))))
+      (if (eq side 'left) (concat rule pad) (concat pad rule)))))
+
+(defun ebox--text-frame-ink-p (line)
+  "Return non-nil when LINE holds only blanks and vertical border rules."
+  (not (string-match-p "[^│ \t]" (substring-no-properties line))))
+
+(defun ebox--text-frame-row (node geo top)
+  "Return box-drawing text for NODE's blank top or bottom border row.
+The row gets a corner where a side border exists and a one-cell rule across
+the content width.  Return nil when the row cannot be drawn one cell per
+glyph."
+  (let* ((cs (ebox-node-cs node))
+         (bw (ebox-geo-bw geo))
+         (bl (ebox-geo-bl geo))
+         (br (ebox-geo-br geo))
+         (inner (- bw bl br))
+         (color (if top (ebox-cs-btc cs) (ebox-cs-bbc cs)))
+         (bg (or (ebox--face-background (ebox-cs-padface cs))
+                 (ebox--face-background (ebox--parent-padface node))))
+         (face (ebox--text-border-face color bg))
+         parts)
+    (when (>= inner 0)
+      (when (> bl 0)
+        (setq parts (append parts
+                            (list (propertize (if top "┌" "└") 'face
+                                              (ebox--text-border-face
+                                               (ebox-cs-blc cs) bg)))))
+        (when (> bl 1)
+          (setq parts (append parts
+                              (list (propertize (make-string (1- bl) ?─)
+                                                'face face))))))
+      (when (> inner 0)
+        (setq parts (append parts
+                            (list (propertize (make-string inner ?─) 'face face)))))
+      (when (> br 0)
+        (when (> br 1)
+          (setq parts (append parts
+                              (list (propertize (make-string (1- br) ?─)
+                                                'face face)))))
+        (setq parts (append parts
+                            (list (propertize (if top "┐" "┘") 'face
+                                              (ebox--text-border-face
+                                               (ebox-cs-brc cs) bg))))))
+      (let ((line (apply #'concat parts)))
+        (puthash line bw ebox--part-widths)
+        line))))
+
 ;;;; Line breaking
 
 (defun ebox--unit-kind (string unit)
@@ -2142,7 +2216,9 @@ is then joined into one string."
          (whole (or top bottom (ebox-node-overlays node)))
          (parts (if whole nil tail)))
     (when (ebox-cs-brc cs)
-      (push (ebox--space (ebox-geo-br geo) (ebox--border-face (ebox-cs-brc cs))) parts))
+      (push (ebox--border-side (ebox-geo-br geo) (ebox-cs-brc cs) 'right
+                               (or padface (ebox--parent-padface node)))
+            parts))
     (let* ((shape (ebox--shape node geo bi))
            (lshape (and (not (ebox-cs-blc cs)) shape))
            (rshape (and (not (ebox-cs-brc cs)) shape))
@@ -2176,7 +2252,9 @@ is then joined into one string."
                                  (list (ebox--space (ebox-geo-pr geo) padface)))
                                parts)))))))
     (when (ebox-cs-blc cs)
-      (push (ebox--space (ebox-geo-bl geo) (ebox--border-face (ebox-cs-blc cs))) parts))
+      (push (ebox--border-side (ebox-geo-bl geo) (ebox-cs-blc cs) 'left
+                               (or padface (ebox--parent-padface node)))
+            parts))
     (if (not whole)
         parts
       (let ((line (if (ebox-node-overlays node)
@@ -2193,27 +2271,29 @@ is then joined into one string."
            (t
             (setq line (ebox--join-fresh line))
             (puthash line (ebox-geo-bw geo) ebox--part-widths)
-            (when top
-              (let ((c (ebox-cs-btc cs)))
-                ;; A terminal has no overline face attribute, so a hairline
-                ;; above blank padding would disappear.  Fill that row with
-                ;; the border color there; the overline stays for displays
-                ;; that can draw it.
-                (when (and (ebox--text-display-p)
-                           (not (eq c 'default))
-                           (ebox--background-cells-p line))
-                  (add-face-text-property 0 (length line) (list :background c) nil line))
-                (add-face-text-property 0 (length line)
-                                        (list :overline (if (eq c 'default) t c))
-                                        t line)))
-            (when bottom
-              (add-face-text-property 0 (length line)
-                                      (list :underline
-                                            (list :position t
-                                                  :color (let ((c (ebox-cs-bbc cs)))
-                                                           (if (eq c 'default) 'foreground-color c))))
-                                      t line))
-            (cons line tail))))))))
+            (let ((framed (and (or top bottom)
+                               (or (and top (< bi pt))
+                                   (and bottom (>= bi (+ pt (ebox-geo-vh geo)))))
+                               (ebox--text-border-rules-p)
+                               (ebox--text-frame-ink-p line)
+                               (ebox--text-frame-row node geo top))))
+              (if framed
+                  (cons framed tail)
+                (when top
+                  ;; A terminal has no overline face attribute, so this only
+                  ;; decorates displays that can draw it.
+                  (let ((c (ebox-cs-btc cs)))
+                    (add-face-text-property 0 (length line)
+                                            (list :overline (if (eq c 'default) t c))
+                                            t line)))
+                (when bottom
+                  (add-face-text-property 0 (length line)
+                                          (list :underline
+                                                (list :position t
+                                                      :color (let ((c (ebox-cs-bbc cs)))
+                                                               (if (eq c 'default) 'foreground-color c))))
+                                          t line))
+                (cons line tail))))))))))
 
 (defvar ebox--part-widths (make-hash-table :test 'eq :weakness 'key)
   "Pixel widths of composed part strings, which are shared and immutable.")

@@ -52,5 +52,12 @@ SPEC has the form (BUFFER ROOT INPUT &rest OPTIONS)."
   (and (> (length string) 0)
        (get-text-property 0 'face string)))
 
+(defun ebox-test-face-plists (value)
+  "Return the face plists in VALUE, a face property value."
+  (cond ((null value) nil)
+        ((and (listp value) (keywordp (car value))) (list value))
+        ((listp value) (apply #'append (mapcar #'ebox-test-face-plists value)))
+        (t nil)))
+
 (provide 'ebox-test-support)
 ;;; ebox-test-support.el ends here
