@@ -172,6 +172,15 @@
 ;; once the relayout for the new size has settled; read the new size with
 ;; `ebox-mount-viewport'.
 ;;
+;; Hook: ebox-display-window-change-functions
+;; Abnormal hook run in a mounted buffer, with the buffer and its display
+;; window, once a window change settles, after the mount was refit.  It runs when the window
+;; became the buffer's display window or its body pixel size changed since the
+;; hook last ran for that buffer, even when a fixed viewport kept the layout.
+;; A shorter window while the minibuffer, a completion popup or the echo area
+;; borrows lines does not run it.  Use it to fit state that follows the window
+;; rather than the mounted viewport, such as page sizes and row budgets.
+;;
 ;;;; Updating nodes
 ;;
 ;; Function: ebox-node-put (node key value)

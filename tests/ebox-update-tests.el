@@ -28,6 +28,46 @@
             (should (equal seen (list (list buffer '(20 . 5) 10)))))
         (remove-hook 'ebox-viewport-change-functions hook)))))
 
+;; Emacs runs `window-size-change-functions' only in an interactive session,
+;; so the scenario binds `noninteractive' around the hook it would run.
+(defun ebox-test-settle-window-change ()
+  "Deliver a window size change for the selected frame and let it settle."
+  (let ((noninteractive nil))
+    (run-hook-with-args 'window-size-change-functions (selected-frame)))
+  (sleep-for (+ ebox-viewport-settle-delay 0.1)))
+
+(ert-deftest ebox-display-window-change-hook-follows-the-window ()
+  (let ((buffer (get-buffer-create " *ebox-display-window*"))
+        (config (current-window-configuration))
+        (seen nil))
+    (let ((hook (lambda (changed window)
+                  (push (list changed (eq window (get-buffer-window changed))
+                              (window-body-height window))
+                        seen))))
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (set-window-buffer (selected-window) buffer)
+            ;; A fixed viewport keeps the layout, yet the window still changes.
+            (ebox-mount buffer '(box :height (lh 1) "x"))
+            (ebox-mount-set-viewport buffer nil 3)
+            (add-hook 'ebox-display-window-change-functions hook)
+            (ebox-test-settle-window-change)
+            (let ((full (window-body-height)))
+              (should (equal seen (list (list buffer t full))))
+              (setq seen nil)
+              (ebox-test-settle-window-change)
+              (should-not seen)
+              (split-window)
+              (ebox-test-settle-window-change)
+              (should (equal (length seen) 1))
+              (should (< (nth 2 (car seen)) full))
+              (should (equal (ebox-mount-viewport buffer)
+                             (cons (car (ebox-mount-viewport buffer)) 3)))))
+        (remove-hook 'ebox-display-window-change-functions hook)
+        (set-window-configuration config)
+        (kill-buffer buffer)))))
+
 (ert-deftest ebox-mount-viewport-follows-displaying-window ()
   (let ((buffer (get-buffer-create " *ebox-viewport-window*"))
         (config (current-window-configuration)))

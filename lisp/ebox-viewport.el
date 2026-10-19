@@ -6,7 +6,9 @@
 ;; intents; one task samples current visible dimensions and refits mounts after
 ;; the drag settles.  A text scale change is a viewport intent too: it changes
 ;; every measured glyph, so one task refreshes the glyph caches and lays the
-;; scaled mounts out again after the scale settles.
+;; scaled mounts out again after the scale settles.  After each refit the
+;; task tells `ebox-display-window-change-functions' which display windows
+;; changed, so state that follows a window can refit in the same settle.
 
 ;;; Code:
 
@@ -46,6 +48,30 @@ rendering every event queues reflow after reflow and freezes the session.
 Reschedule this trailing delay on each event; the drag then reflows once it
 settles instead of once per intermediate size.")
 
+(defvar ebox-display-window-change-functions nil
+  "Abnormal hook run in a mounted BUFFER with BUFFER and its display WINDOW.
+It runs once a window change settles, after BUFFER's mount was refit, when
+WINDOW became BUFFER's display window or its body pixel size changed since
+the hook last ran for BUFFER.  Transient UI borrowing lines does not run it.
+It runs even when a fixed mount viewport kept the layout unchanged.")
+
+(defvar ebox--display-window-geometry (make-hash-table :test #'eq :weakness 'key)
+  "Display window and body pixel size last delivered per mounted buffer.")
+
+(defun ebox--display-window-notify (buffer window borrowed)
+  "Run `ebox-display-window-change-functions' when BUFFER's WINDOW changed.
+With BORROWED non-nil, transient UI holds lines of the frame, so a shorter
+body than last delivered is not a change."
+  (let ((geometry (list window (window-body-width window t)
+                        (window-body-height window t)))
+        (last (gethash buffer ebox--display-window-geometry)))
+    (unless (or (equal geometry last)
+                (and borrowed (eq window (car last))
+                     (< (nth 2 geometry) (nth 2 last))))
+      (puthash buffer geometry ebox--display-window-geometry)
+      (with-current-buffer buffer
+        (run-hook-with-args 'ebox-display-window-change-functions buffer window)))))
+
 (defun ebox--window-size-change-sync-frame (frame)
   "Refit mounted Ebox buffers whose display window is in FRAME."
   (when (frame-live-p frame)
@@ -62,15 +88,17 @@ settles instead of once per intermediate size.")
                   (display-window (ebox--display-window buffer)))
               (when (and mount (window-live-p display-window)
                          (eq (window-frame display-window) frame))
-                (let ((height (window-body-height display-window)))
+                (let ((height (window-body-height display-window))
+                      (borrowed (and (not frame-changed)
+                                     (ebox--viewport-transient-space-borrow-p frame))))
                   ;; Borrowed space is not a resize.  A height decrease while
                   ;; the minibuffer, a completion popup or the echo area is
                   ;; showing keeps the mounted viewport; a frame change or
                   ;; height growth is real geometry.
-                  (unless (and (not frame-changed)
-                               (ebox--viewport-transient-space-borrow-p frame)
-                               (< height (or (ebox-mount-vh mount) -1)))
-                    (ebox-refit buffer))))))))
+                  (unless (and borrowed (< height (or (ebox-mount-vh mount) -1)))
+                    (ebox-refit buffer))
+                  (when (buffer-live-p buffer)
+                    (ebox--display-window-notify buffer display-window borrowed))))))))
       (when frame-size
         (puthash frame frame-size ebox--viewport-frame-sizes)))))
 

@@ -720,6 +720,11 @@
       "purpose": "A viewport size change runs the viewport hook once with the buffer after the new layout settled; an unchanged size runs nothing."
     },
     {
+      "name": "ebox-display-window-change-hook-follows-the-window",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "A settled window change runs the display-window hook once with the buffer and its window, also under a fixed viewport, and an unchanged window does not run it again."
+    },
+    {
       "name": "ebox-mount-viewport-follows-displaying-window",
       "file": "tests/ebox-update-tests.el",
       "purpose": "A mount without a fixed viewport takes its width and height from the window displaying its buffer, including in batch, and the size is measurable before mounting."

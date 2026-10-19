@@ -4,6 +4,15 @@ All notable changes to Ebox are documented here.
 
 ## Unreleased
 
+### Added
+
+- `ebox-display-window-change-functions` runs with a mounted buffer and its
+  display window once a window change settles, after the refit, whenever that
+  window's body size changed or it became the display window.  It also runs
+  under a fixed viewport, so state that follows the window (page sizes, row
+  budgets, a self-fixed canvas height) refits in the same settle instead of in
+  a second resize handler of its own.
+
 ### Fixed
 
 - Text-terminal frames draw borders with box-drawing characters: side borders
