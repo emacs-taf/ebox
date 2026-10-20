@@ -22,6 +22,13 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- A drag no longer keeps moving after the window system loses its button
+  release.  A new press of the primary button ends an unlocked drag with
+  `end` at its last position and then starts its own gesture; it used to
+  cancel the drag with reason `input`.  While a drag is tracked, a shown or
+  pending tooltip is hidden and help echo is suppressed, because tooltip work
+  makes the macOS port lose releases more often.
+
 - Automatic grid placement no longer rescans the occupied cells from the
   grid's origin for every item.  Each search resumes after the cells already
   taken, so placing N items is linear instead of quadratic; items still take

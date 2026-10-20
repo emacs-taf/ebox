@@ -855,6 +855,16 @@
       "purpose": "A key typed during a drag cancels it with reason input and remains available to Emacs."
     },
     {
+      "name": "ebox-drag-new-press-ends-a-drag-that-lost-its-release",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "A new primary press during an unlocked drag ends it with end at the last position and is replayed to start its own gesture."
+    },
+    {
+      "name": "ebox-drag-hides-tooltips-and-help-while-tracking",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "A drag in a graphic frame clears the shown help, suppresses help display while tracking and restores the help function afterwards."
+    },
+    {
       "name": "ebox-drag-edge-reports-intent-on-each-window-edge",
       "file": "tests/ebox-drag-tests.el",
       "purpose": "An opted-in drag resting at each window edge receives repeating edge gestures naming that edge."

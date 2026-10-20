@@ -65,8 +65,14 @@
 ;; A gesture ends with end on release, or with cancel when the target
 ;; disappears, the pointer leaves the window, Escape is pressed or another
 ;; input arrives.  Escape cancels with quit and is consumed; other input is
-;; preserved.  Ebox never scrolls for an edge phase: the callback owns the
-;; viewport, the scroll step and how a content-anchored target follows it.
+;; preserved.  The window system can lose a release, so a new press of the
+;; primary button ends an unlocked gesture with end at the last position, and
+;; the press is then handled as usual.  While a gesture is tracked, a shown
+;; tooltip is hidden and help echo is suppressed.  Read the pointer from
+;; :position: the start of a native drag or release event is the press, and
+;; the event of an end implied by a new press is that press.  Ebox never
+;; scrolls for an edge phase: the callback owns the viewport, the scroll step
+;; and how a content-anchored target follows it.
 ;;
 ;; Variable: ebox-drag-edge-band
 ;; Lines and columns from a window edge where a drag reports edge intent.

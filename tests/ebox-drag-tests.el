@@ -83,6 +83,44 @@ BODY can call `ebox-drag-test-press' and `ebox-drag-test-release'."
         (should (eq (car reasons) 'input))
         (should (equal unread-command-events '(?a)))))))
 
+(ert-deftest ebox-drag-new-press-ends-a-drag-that-lost-its-release ()
+  "A new press ends the drag at its last position and starts its own gesture."
+  (let (gestures)
+    (ebox-drag-test-with-target
+        (ebox-keymap-create
+         :drag (lambda (gesture)
+                 (push (list (plist-get gesture :phase)
+                             (plist-get gesture :position)
+                             (plist-get gesture :reason))
+                       gestures)))
+      (let* ((again (list 'down-mouse-1 (list window position '(9 . 6) 3)))
+             (unread-command-events
+              (list (funcall move '(8 . 5)) again ?x)))
+        (funcall command press)
+        (should (equal (nreverse gestures)
+                       '((start (4 . 4) nil) (move (8 . 5) nil)
+                         (end (8 . 5) nil))))
+        (should (equal unread-command-events (list again ?x)))))))
+
+(ert-deftest ebox-drag-hides-tooltips-and-help-while-tracking ()
+  "A drag hides a shown or pending tooltip and shows no help until it ends."
+  (let ((shown '("earlier")) seen)
+    (ebox-drag-test-with-target
+        (ebox-keymap-create
+         :drag (lambda (gesture)
+                 (when (eq (plist-get gesture :phase) 'move)
+                   (funcall show-help-function "during"))
+                 (push (plist-get gesture :phase) seen)))
+      (let ((show-help-function (lambda (message) (push message shown)))
+            (unread-command-events
+             (list (funcall move '(5 . 5)) (funcall release '(5 . 5)))))
+        (cl-letf (((symbol-function 'display-graphic-p) #'always))
+          (funcall command press))
+        (should (equal (nreverse seen) '(start move end)))
+        (should (equal shown '(nil "earlier")))
+        (funcall show-help-function "after")
+        (should (equal (car shown) "after"))))))
+
 (ert-deftest ebox-drag-edge-reports-intent-on-each-window-edge ()
   "An opted-in drag reports the bottom, top, left and right edge in turn."
   (dolist (side '(bottom top left right))

@@ -536,9 +536,15 @@ carries intent only and this tracker never scrolls."
                       (ebox--set-mount-state mount 'active owner)
                       (setq active t))
                     (setq started t)
+                    ;; Tooltip timers and windows widen the gaps in which the
+                    ;; NS port drops mouse events, losing the release; hide
+                    ;; any tip now and show no help until the drag ends.
+                    (when (and show-help-function (display-graphic-p frame))
+                      (funcall show-help-function nil))
                     (emit 'start)
                     (track-mouse
-                      (let ((track-mouse 'dragging))
+                      (let ((track-mouse 'dragging)
+                            (show-help-function #'ignore))
                         (while (and (not done) (or finishing (available)))
                           (when-let* ((next (read-event nil nil 0.05)))
                             (unless (or finishing (available))
@@ -599,6 +605,14 @@ carries intent only and this tracker never scrolls."
                                             moved (or moved (not (equal xy start))))
                                       (emit 'move)))
                                     (redisplay t)))
+                                 ((and primary-down (not finishing))
+                                  ;; A new press of the held button means the
+                                  ;; window system lost its release: end where
+                                  ;; the pointer last was, then let the press
+                                  ;; start whatever it starts.
+                                  (push next unread-command-events)
+                                  (setq finished t done t)
+                                  (emit 'end))
                                  (t (push next unread-command-events)
                                     (setq reason 'input done t))))))
                           (edge-tick))
