@@ -334,6 +334,11 @@ under it repaints without moving text."
   (and (null (text-properties-at 0 string))
        (null (next-property-change 0 string))))
 
+(defun ebox--display-free-p (string)
+  "Return non-nil when no part of STRING carries a `display' property."
+  (and (null (get-text-property 0 'display string))
+       (null (next-single-property-change 0 'display string))))
+
 (defun ebox--fixed-space-width (display)
   "Return the fixed pixel width of DISPLAY space spec, or nil."
   (when (and (eq (car-safe display) 'space)

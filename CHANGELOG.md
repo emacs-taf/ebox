@@ -161,6 +161,12 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Text without `display` properties is measured per face run instead of
+  per grapheme cluster: a run's characters share one face lookup and the
+  cluster table is built only when a line has to wrap.  Rows of many styled
+  cells measure about twice as fast; a horizontal step through a 31-column
+  styled text grid fell from 13.8 ms to 6.3 ms.
+
 - A drag keeps tracking the pointer after it leaves the window's text area,
   onto the mode line, another window or past the frame, instead of
   cancelling with reason `window-left`, which no longer exists.  `:position`

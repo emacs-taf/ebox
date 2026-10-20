@@ -114,8 +114,8 @@ FRESH non-nil means LINE is a new string the function may modify.")
         (setf (ebox-node-meas node) m))
       (aset m 0 fontface) (aset m 1 text) (aset m 2 ebox--width-epoch) (aset m 3 wrap)
       (aset m 7 nil)
-      (if (ebox--plain-string-p text)
-          (ebox--measure-plain m text fontface wrap)
+      (if (ebox--display-free-p text)
+          (ebox--measure-runs m text fontface wrap)
         (ebox--measure-units m text (ebox--unit-vector text fontface) wrap))
       m)))
 
@@ -127,13 +127,21 @@ FRESH non-nil means LINE is a new string the function may modify.")
         ((ebox--cjk-char-p ch) w)
         (t (+ word w))))
 
-(defun ebox--measure-plain (m text face wrap)
-  "Store MAXW, MINW and NEWLINE of property-free TEXT under FACE in M."
-  (let* ((table (ebox--face-table face))
-         (ascii (car table)) (wide (cdr table))
-         (len (length text)) (pos 0)
+(defun ebox--measure-runs (m text face wrap)
+  "Store MAXW, MINW and NEWLINE of display-free TEXT under FACE in M.
+Each run of TEXT's own `face' property is measured with that face painted
+over FACE, without building per-cluster units: lines that need breaking
+build them on demand."
+  (let* ((len (length text)) (pos 0) (run-end 0)
+         run-face ascii wide
          (maxw 0) (minw 0) (line 0) (word 0) (newline nil))
     (while (< pos len)
+      (when (>= pos run-end)
+        (let* ((own (get-text-property pos 'face text))
+               (table (ebox--face-table
+                       (setq run-face (if own (ebox--merge-face own face) face)))))
+          (setq run-end (or (next-single-property-change pos 'face text len) len)
+                ascii (car table) wide (cdr table))))
       (let* ((ch (aref text pos))
              (next (if (and (< ch 128)
                             (or (= (1+ pos) len) (< (aref text (1+ pos)) 128)))
@@ -141,8 +149,8 @@ FRESH non-nil means LINE is a new string the function may modify.")
                      (ebox--cluster-end text pos len)))
              (w (if (= next (1+ pos))
                     (or (if (< ch 128) (aref ascii ch) (gethash ch wide))
-                        (ebox--char-width ch face))
-                  (ebox--cluster-width text pos next face))))
+                        (ebox--char-width ch run-face))
+                  (ebox--cluster-width text pos next run-face))))
         (if (eq ch ?\n)
             (setq maxw (max maxw line) line 0 word 0 newline t)
           (setq line (+ line w)
