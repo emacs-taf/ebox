@@ -212,6 +212,27 @@ B ")))))
 B  
 C  "))))))
 
+(ert-deftest ebox-wheel-over-chrome-keeps-a-fitting-canvas-in-place ()
+  "A wheel turn that no scroll region consumes never slides a fitting tree.
+A mounted canvas is the whole picture: once it fits the window, scrolling
+the window would move every region at once instead of revealing content."
+  (let ((ebox-scroll-step 1))
+    (ebox-test-with-mounted (buffer _root
+                             '(column (text "Header")
+                                      (box :width (ch 4) :height (lh 2)
+                                           :overflow scroll
+                                           (column (text "A") (text "B") (text "C")))))
+      (save-window-excursion
+        (switch-to-buffer buffer)
+        (goto-char (point-min))
+        ;; The pointer sits in the header, where no scroll region responds;
+        ;; the window used to scroll the whole page, shifting the header too.
+        (let ((posn (posn-at-x-y 0 0 (selected-window))))
+          (ebox-wheel-scroll-down (list 'wheel-down posn))
+          (ebox-wheel-scroll-down (list 'wheel-down posn))
+          (should (= (window-start) (point-min))))
+        (should (string-prefix-p "Header" (ebox-test-buffer-text buffer)))))))
+
 (ert-deftest ebox-page-scroll-commands-accept-explicit-line-counts ()
   (ebox-test-with-mounted (buffer root
                            '(box :id "scroller" :width (ch 4) :height (lh 2)

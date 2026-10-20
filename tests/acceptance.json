@@ -605,6 +605,11 @@
       "purpose": "Scrolling past a scroller's end never scrolls a window that already shows the whole buffer."
     },
     {
+      "name": "ebox-wheel-over-chrome-keeps-a-fitting-canvas-in-place",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "A wheel turn that no scroll region consumes does not scroll the window of a mounted tree that already fits, so every region keeps its place."
+    },
+    {
       "name": "ebox-page-scroll-commands-accept-explicit-line-counts",
       "file": "tests/ebox-scroll-input-tests.el",
       "purpose": "Page scroll commands accept explicit line counts and update visible content."

@@ -2073,13 +2073,25 @@ its bottom at the last line, as far as the content allows."
           (funcall fallback rest)
         ((beginning-of-buffer end-of-buffer) nil)))))
 
+(defun ebox--tree-fits-window-p (window)
+  "Return non-nil when WINDOW's whole buffer fits its body.
+The pixels are measured, not counted in lines: a wrapped or styled row is
+taller than one line, and the last row of a canvas often ends in padding
+cells, so neither line counts nor `pos-visible-in-window-p' answers whether
+the picture is complete."
+  (when (window-live-p window)
+    (let ((body (window-body-height window t)))
+      (<= (cdr (window-text-pixel-size window (point-min) (point-max)
+                                       nil (1+ body)))
+          body))))
+
 (defun ebox--scroll-window (lines)
   "Scroll the selected window by LINES that no scroller consumed.
-The window never scrolls down once the buffer end shows, so a mounted tree
-that fits its window keeps its pinned top and bottom rows in place."
+A mounted tree that fits its window keeps its pinned top and bottom rows in
+place: the canvas already shows everything, so scrolling it would slide the
+whole page instead of revealing content."
   (if (> lines 0)
-      (unless (or (<= (count-lines (window-start) (point-max)) (window-body-height))
-                  (pos-visible-in-window-p (point-max) nil t))
+      (unless (ebox--tree-fits-window-p (selected-window))
         (scroll-up lines))
     (scroll-down (- lines))))
 
