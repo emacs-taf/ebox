@@ -4,6 +4,13 @@ All notable changes to Ebox are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- A wheel turn that no scroll region consumes no longer scrolls the window
+  of a mounted tree that already fits: the fallback measures the painted tree
+  instead of asking whether `point-max` is visible, so a canvas stays pinned
+  instead of sliding every region at once.
+
 ### Added
 
 - `ebox-keymap-create` accepts `:drag-edge`: a drag that has moved and rests
