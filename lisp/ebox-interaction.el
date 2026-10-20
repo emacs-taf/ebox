@@ -294,12 +294,15 @@ Presses neither start region selection nor reach global commands.")
 mouse button; :bindings is an alist of key descriptions or vectors paired with
 zero-argument callbacks; :drag is a one-argument gesture callback and
 :drag-lock-modifier names a modifier that keeps the gesture alive after
-release.  See the Ebox Commentary for the gesture protocol."
+release.  :drag-edge non-nil reports an `edge' phase while a drag rests in the
+window's edge band; the callback owns any scrolling.  See the Ebox Commentary
+for the gesture protocol."
   (unless (and (proper-list-p options) (zerop (% (length options) 2)))
     (error "Ebox keymap options must be an even plist"))
   (let ((map (make-sparse-keymap)) seen keys)
     (cl-loop for (key _value) on options by #'cddr do
-             (unless (memq key '(:activate :bindings :drag :drag-lock-modifier))
+             (unless (memq key '(:activate :bindings :drag :drag-lock-modifier
+                                 :drag-edge))
                (error "Unknown Ebox keymap option: %S" key))
              (when (memq key seen)
                (error "Repeated Ebox keymap option: %S" key))
@@ -307,6 +310,7 @@ release.  See the Ebox Commentary for the gesture protocol."
     (let ((activate (plist-get options :activate))
           (drag (plist-get options :drag))
           (lock (plist-get options :drag-lock-modifier))
+          (edge (plist-get options :drag-edge))
           (bindings (plist-get options :bindings)))
       (when (and lock (not (memq lock '(shift control meta super hyper))))
         (error "Ebox :drag-lock-modifier must be a supported modifier: %S" lock))
@@ -352,7 +356,8 @@ release.  See the Ebox Commentary for the gesture protocol."
                        (interactive (list last-input-event))
                        (ebox--track-drag
                         press drag nil
-                        (and lock (memq lock (event-modifiers press)))))))
+                        (and lock (memq lock (event-modifiers press)))
+                        edge))))
           (dolist (event ebox--claimed-mouse-events)
             (unless (lookup-key map (vector event))
               (define-key map (vector event)
@@ -423,10 +428,46 @@ NOERROR is non-nil."
     (let ((node (get-text-property position 'ebox-node)))
       (and node (ebox--keymap-owner node)))))
 
-(defun ebox--track-drag (event callback &optional defer-active lock)
+(defun ebox--escape-event-p (event)
+  "Return non-nil when EVENT is the Escape key."
+  (or (eq event 'escape)
+      (eq (event-basic-type event) 'escape)
+      (equal event ?\e)))
+
+(defun ebox--drag-edge-symbols (position width height band-x band-y)
+  "Return the edge symbols POSITION rests against in a WIDTH by HEIGHT window.
+POSITION is window-relative pixels; BAND-X and BAND-Y are the edge bands in
+pixels.  Symbols come in the fixed order `left', `right', `top', `bottom'."
+  (let ((x (car position)) (y (cdr position)))
+    (delq nil (list (and (<= x band-x) 'left)
+                    (and (>= x (- width band-x)) 'right)
+                    (and (<= y band-y) 'top)
+                    (and (>= y (- height band-y)) 'bottom)))))
+
+(defvar ebox-drag-edge-band 1
+  "Lines and columns from a window edge where a drag reports edge intent.")
+
+(defvar ebox-drag-edge-interval 0.12
+  "Seconds between `edge' gestures while a drag rests in the edge band.")
+
+(defun ebox--drag-edge-band ()
+  "Return the configured drag edge band in lines or columns."
+  (if (and (numberp ebox-drag-edge-band) (> ebox-drag-edge-band 0))
+      ebox-drag-edge-band
+    1))
+
+(defun ebox--drag-edge-interval ()
+  "Return the configured seconds between `edge' gestures."
+  (if (and (numberp ebox-drag-edge-interval) (> ebox-drag-edge-interval 0))
+      ebox-drag-edge-interval
+    0.12))
+
+(defun ebox--track-drag (event callback &optional defer-active lock edge)
   "Track primary-button EVENT on its owner, calling CALLBACK per phase.
 DEFER-ACTIVE delays the active state until the first motion.  LOCK keeps the
-gesture alive after the first release until the next press."
+gesture alive after the first release until the next press.  EDGE reports an
+`edge' phase while the pointer rests in the window's edge band; the phase
+carries intent only and this tracker never scrolls."
   (when ebox--drag-active
     (user-error "An Ebox drag is already active"))
   (let* ((press (event-start event)) (window (posn-window press)))
@@ -442,7 +483,16 @@ gesture alive after the first release until the next press."
            (position start) (last-event event) (reason 'input)
            (ebox--drag-active t)
            (mouse-fine-grained-tracking t)
-           started finished active locked finishing)
+           (window-edges (window-inside-pixel-edges window))
+           (width (- (nth 2 window-edges) (nth 0 window-edges)))
+           (height (- (nth 3 window-edges) (nth 1 window-edges)))
+           (frame (window-frame window))
+           (band (ebox--drag-edge-band))
+           (band-x (max 1 (* band (frame-char-width frame))))
+           (band-y (max 1 (* band (frame-char-height frame))))
+           (interval (ebox--drag-edge-interval))
+           edge-since next-edge moved
+           done started finished active locked finishing)
       (cl-labels
           ((available ()
              (and (window-live-p window) (eq (window-buffer window) buffer)
@@ -459,7 +509,25 @@ gesture alive after the first release until the next press."
                               :position (cons (car position) (cdr position))
                               :delta (cons (- (car position) (car start))
                                            (- (cdr position) (cdr start)))
-                              :reason (and (eq phase 'cancel) reason))))))
+                              :reason (and (eq phase 'cancel) reason)
+                              :edges (and (eq phase 'edge)
+                                          (ebox--drag-edge-symbols
+                                           position width height
+                                           band-x band-y))))))
+           (edge-tick ()
+             (when (and edge moved (not locked) (not finishing) (not done))
+               (let ((edges (ebox--drag-edge-symbols
+                             position width height band-x band-y))
+                     (now (float-time)))
+                 (if (null edges)
+                     (setq edge-since nil next-edge nil)
+                   (unless edge-since
+                     (setq edge-since now
+                           next-edge (+ now interval)))
+                   (when (and next-edge (>= now next-edge))
+                     (setq next-edge (+ now interval))
+                     (emit 'edge)
+                     (redisplay t)))))))
         (when (and owner (available))
           (unwind-protect
               (condition-case problem
@@ -470,7 +538,7 @@ gesture alive after the first release until the next press."
                     (setq started t)
                     (emit 'start)
                     (track-mouse
-                      (let ((track-mouse 'dragging) done)
+                      (let ((track-mouse 'dragging))
                         (while (and (not done) (or finishing (available)))
                           (when-let* ((next (read-event nil nil 0.05)))
                             (unless (or finishing (available))
@@ -499,11 +567,10 @@ gesture alive after the first release until the next press."
                                                    (not (memq 'down modifiers))))
                                      (motion (mouse-movement-p next)))
                                 (cond
-                                 ((and locked (or (eq (event-basic-type next) 'escape)
-                                                  (equal next ?\e)))
-                                  (setq reason 'quit done t))
                                  ((and finishing release) (setq done t))
                                  ((and finishing motion) nil)
+                                 ((ebox--escape-event-p next)
+                                  (setq reason 'quit done t))
                                  ((and locked primary-down)
                                   (if-let* ((xy (ebox--drag-position (event-start next) window)))
                                       (progn
@@ -528,11 +595,13 @@ gesture alive after the first release until the next press."
                                         (setq finished t done t)
                                         (emit 'end)))
                                      ((not (equal xy position))
-                                      (setq position xy)
+                                      (setq position xy
+                                            moved (or moved (not (equal xy start))))
                                       (emit 'move)))
                                     (redisplay t)))
                                  (t (push next unread-command-events)
-                                    (setq reason 'input done t)))))))
+                                    (setq reason 'input done t))))))
+                          (edge-tick))
                         (unless (or finished (available))
                           (setq reason 'target-unavailable)))))
                 ((error quit)

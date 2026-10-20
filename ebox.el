@@ -47,6 +47,32 @@
 ;; Function: ebox-keymap-create (&rest options)
 ;;;###autoload (autoload 'ebox-keymap-create "ebox" nil nil)
 ;; Create a native keymap from OPTIONS.
+;; :activate is a zero-argument callback for RET, return, SPC and the primary
+;; mouse button; :bindings is an alist of key descriptions or vectors paired
+;; with zero-argument callbacks; :drag is a one-argument gesture callback;
+;; :drag-lock-modifier names a modifier that keeps the gesture alive after
+;; release; :drag-edge non-nil reports edge intent during a drag.
+;;
+;; A :drag callback receives one plist per phase.  :phase is start, move, end,
+;; cancel or edge.  :event is the native event that produced the phase (the
+;; last read event for edge); :node, :window and :buffer identify the retained
+;; owner and its display; :start and :position are window-relative (X . Y)
+;; pixels and :delta is the displacement from :start.  A cancel also carries
+;; :reason: window-left, target-unavailable, input, quit or error.  An edge
+;; phase carries :edges, the window edges the pointer rests against, in the
+;; fixed order left, right, top, bottom.
+;;
+;; A gesture ends with end on release, or with cancel when the target
+;; disappears, the pointer leaves the window, Escape is pressed or another
+;; input arrives.  Escape cancels with quit and is consumed; other input is
+;; preserved.  Ebox never scrolls for an edge phase: the callback owns the
+;; viewport, the scroll step and how a content-anchored target follows it.
+;;
+;; Variable: ebox-drag-edge-band
+;; Lines and columns from a window edge where a drag reports edge intent.
+;;
+;; Variable: ebox-drag-edge-interval
+;; Seconds between edge gestures while a drag rests in the edge band.
 ;;
 ;; Function: ebox-display-metrics (&optional buffer-or-name)
 ;;;###autoload (autoload 'ebox-display-metrics "ebox" nil nil)

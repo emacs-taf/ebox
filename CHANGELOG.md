@@ -6,6 +6,13 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- `ebox-keymap-create` accepts `:drag-edge`: a drag that has moved and rests
+  in a window edge band then receives repeating `edge` phases whose `:edges`
+  name the touched edges.  The tracker reports intent only; the callback owns
+  the scroll.  `ebox-drag-edge-band` and `ebox-drag-edge-interval` set the
+  band and cadence, and the gesture protocol is documented in the entry
+  Commentary.
+
 - `ebox-display-window-change-functions` runs with a mounted buffer and its
   display window once a window change settles, after the refit, whenever that
   window's body size changed or it became the display window.  It also runs
@@ -14,6 +21,10 @@ All notable changes to Ebox are documented here.
   a second resize handler of its own.
 
 ### Fixed
+
+- Escape during a drag cancels it with `quit` and is consumed.  It was pushed
+  back to the command loop, where the still-held button's release completed it
+  as an undefined `ESC <drag-mouse-1>` sequence and rang the bell.
 
 - Text-terminal frames draw borders with box-drawing characters: side borders
   are one-cell rules instead of filled colour bands, and a blank top or bottom

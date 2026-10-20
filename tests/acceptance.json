@@ -838,6 +838,31 @@
       "name": "ebox-display-metrics-are-owned-and-match-native-measurement",
       "file": "tests/ebox-text-scale-tests.el",
       "purpose": "Effective default-face metrics match native measurement across scaling and callers own their result."
+    },
+    {
+      "name": "ebox-drag-escape-cancels-and-is-consumed",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "Escape ends a non-locked drag with a cancel whose reason is quit and leaves no Escape prefix for the release; unrelated input is preserved."
+    },
+    {
+      "name": "ebox-drag-other-input-cancels-and-is-preserved",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "A key typed during a drag cancels it with reason input and remains available to Emacs."
+    },
+    {
+      "name": "ebox-drag-edge-reports-intent-on-each-window-edge",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "An opted-in drag resting at each window edge receives repeating edge gestures naming that edge."
+    },
+    {
+      "name": "ebox-drag-edge-waits-for-motion",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "A press that rests at an edge without moving reports no edge intent, so a click does not scroll."
+    },
+    {
+      "name": "ebox-drag-edge-requires-the-keymap-option",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "Without :drag-edge a drag keeps its start, move and end phases and reports no edge intent."
     }
   ]
 }

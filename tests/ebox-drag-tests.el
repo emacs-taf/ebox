@@ -1,0 +1,130 @@
+;;; ebox-drag-tests.el --- Native drag tracking tests -*- lexical-binding: t; -*-
+
+(require 'ebox-test-support)
+
+(defun ebox-drag-test-play (command press events)
+  "Invoke COMMAND with PRESS, feeding EVENTS through `read-event'.
+EVENTS is a list of (TIME . EVENT); idle reads advance a fake clock by 0.05
+seconds until an event's TIME arrives, so edge timing is deterministic."
+  (let ((clock 0.0) (queue (copy-sequence events)))
+    (cl-letf (((symbol-function 'read-event)
+               (lambda (&optional _prompt _inherit timeout)
+                 (cond
+                  ((and queue (<= (car (car queue)) clock))
+                   (cdr (pop queue)))
+                  ((and timeout (> timeout 0))
+                   (setq clock (+ clock 0.05))
+                   nil)
+                  (t nil))))
+              ((symbol-function 'float-time)
+               (lambda (&optional time) (or time clock))))
+      (funcall command press))))
+
+(defun ebox-drag-test-edge-point (side width height)
+  "Return the pixel point on SIDE of a WIDTH by HEIGHT window."
+  (pcase side
+    ('bottom (cons (/ width 2) (1- height)))
+    ('top (cons (/ width 2) 0))
+    ('left (cons 0 (/ height 2)))
+    ('right (cons (1- width) (/ height 2)))))
+
+(defmacro ebox-drag-test-with-target (keymap &rest body)
+  "Mount a TARGET with KEYMAP and run BODY with window, width and height.
+BODY can call `ebox-drag-test-press' and `ebox-drag-test-release'."
+  (declare (indent 1))
+  `(let ((buffer (generate-new-buffer " *ebox-drag-test*")))
+     (unwind-protect
+         (save-window-excursion
+           (switch-to-buffer buffer)
+           (ebox-mount buffer
+                       (list 'column
+                             (list 'box :id "target" :keymap ,keymap "TARGET")))
+           (let* ((window (selected-window))
+                  (window-edges (window-inside-pixel-edges window))
+                  (width (- (nth 2 window-edges) (nth 0 window-edges)))
+                  (height (- (nth 3 window-edges) (nth 1 window-edges)))
+                  (position (ebox-node-position
+                             (car (ebox-selector-query-buffer buffer "#target"))))
+                  (command (lookup-key (get-text-property position 'keymap)
+                                       [down-mouse-1]))
+                  (press (list 'down-mouse-1 (list window position '(4 . 4) 0)))
+                  (move (lambda (point)
+                          (list 'mouse-movement (list window position point 1))))
+                  (release (lambda (point)
+                             (list 'mouse-1 (list window position point 2)))))
+             (ignore command)
+             ,@body))
+       (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-drag-escape-cancels-and-is-consumed ()
+  "Escape ends a plain drag with quit and does not survive as a Meta prefix."
+  (let (phases)
+    (ebox-drag-test-with-target
+        (ebox-keymap-create
+         :drag (lambda (gesture) (push (plist-get gesture :phase) phases)))
+      (let ((unread-command-events
+             (list (funcall move '(5 . 5)) 27 (funcall release '(5 . 5)) ?x)))
+        (funcall command press)
+        (should (equal (nreverse phases) '(start move cancel)))
+        (should (equal unread-command-events
+                       (list (funcall release '(5 . 5)) ?x)))))))
+
+(ert-deftest ebox-drag-other-input-cancels-and-is-preserved ()
+  "An unrelated key cancels the drag and stays available to Emacs."
+  (let (phases reasons)
+    (ebox-drag-test-with-target
+        (ebox-keymap-create
+         :drag (lambda (gesture)
+                 (push (plist-get gesture :phase) phases)
+                 (push (plist-get gesture :reason) reasons)))
+      (let ((unread-command-events (list (funcall move '(5 . 5)) ?a)))
+        (funcall command press)
+        (should (equal (nreverse phases) '(start move cancel)))
+        (should (eq (car reasons) 'input))
+        (should (equal unread-command-events '(?a)))))))
+
+(ert-deftest ebox-drag-edge-reports-intent-on-each-window-edge ()
+  "An opted-in drag reports the bottom, top, left and right edge in turn."
+  (dolist (side '(bottom top left right))
+    (let (edges)
+      (ebox-drag-test-with-target
+          (ebox-keymap-create
+           :drag-edge t
+           :drag (lambda (gesture)
+                   (when (eq (plist-get gesture :phase) 'edge)
+                     (push (plist-get gesture :edges) edges))))
+        (let ((point (ebox-drag-test-edge-point side width height)))
+          (ebox-drag-test-play
+           command press
+           (list (cons 0.0 (funcall move point))
+                 (cons 0.5 (funcall release point))))
+          (should edges)
+          (should (cl-every (lambda (value) (equal value (list side))) edges)))))))
+
+(ert-deftest ebox-drag-edge-waits-for-motion ()
+  "A press resting at the edge reports no intent until the pointer moves."
+  (let (phases)
+    (ebox-drag-test-with-target
+        (ebox-keymap-create
+         :drag-edge t
+         :drag (lambda (gesture) (push (plist-get gesture :phase) phases)))
+      (let ((point (ebox-drag-test-edge-point 'bottom width height)))
+        (ebox-drag-test-play
+         command press
+         (list (cons 0.5 (funcall release point))))
+        (should (equal (nreverse phases) '(start end)))))))
+
+(ert-deftest ebox-drag-edge-requires-the-keymap-option ()
+  "Without :drag-edge a drag keeps its old phases at the window edge."
+  (let (phases)
+    (ebox-drag-test-with-target
+        (ebox-keymap-create
+         :drag (lambda (gesture) (push (plist-get gesture :phase) phases)))
+      (let ((point (ebox-drag-test-edge-point 'bottom width height)))
+        (ebox-drag-test-play
+         command press
+         (list (cons 0.0 (funcall move point))
+               (cons 0.5 (funcall release point))))
+        (should (equal (nreverse phases) '(start move end)))))))
+
+;;; ebox-drag-tests.el ends here
