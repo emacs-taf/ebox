@@ -475,6 +475,11 @@
       "purpose": "Grid tracks and placements expose expected public node geometries."
     },
     {
+      "name": "ebox-render-grid-auto-placement-fills-earliest-free-cells",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Automatic grid items take the earliest free area in row or column flow, filling holes and using columns a definite-row item adds."
+    },
+    {
       "name": "ebox-render-stretched-heights-fill-definite-areas",
       "file": "tests/ebox-rendering-tests.el",
       "purpose": "A stretched height fills its grid area and stays definite for stretched descendants."

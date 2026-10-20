@@ -22,6 +22,12 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Automatic grid placement no longer rescans the occupied cells from the
+  grid's origin for every item.  Each search resumes after the cells already
+  taken, so placing N items is linear instead of quadratic; items still take
+  the earliest free area in flow order.  Re-laying out an auto-placed sheet of
+  56 rows by 35 columns after a one-row scroll fell from about 356 ms to 71 ms.
+
 - Escape during a drag cancels it with `quit` and is consumed.  It was pushed
   back to the command loop, where the still-held button's release completed it
   as an undefined `ESC <drag-mouse-1>` sequence and rang the bell.

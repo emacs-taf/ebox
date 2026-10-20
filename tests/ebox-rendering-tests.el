@@ -218,6 +218,41 @@ is the application's global choice and stays unemphasized."
       (should (equal (ebox-node-geometry g1) '(:x 0 :y 0 :width 2 :height 1)))
       (should (equal (ebox-node-geometry g2) '(:x 2 :y 1 :width 4 :height 1))))))
 
+(ert-deftest ebox-render-grid-auto-placement-fills-earliest-free-cells ()
+  "Automatic items take the earliest free area in flow order, including holes."
+  (cl-flet ((origins (root ids)
+              (mapcar (lambda (id)
+                        (let ((g (ebox-node-geometry
+                                  (car (ebox-selector-query root (concat "#" id))))))
+                          (list id (plist-get g :x) (plist-get g :y))))
+                      ids)))
+    (ebox-test-with-mounted (buffer root
+                             '(grid :grid-template-columns ((ch 2) (ch 2) (ch 2))
+                                    :grid-auto-columns (ch 2) :grid-auto-rows (lh 1)
+                                    (box :id "x" :grid-row 1 :grid-column 2 "x")
+                                    (box :id "a" "a")
+                                    (box :id "b" :grid-column (:span 2) "b")
+                                    (box :id "c" "c")
+                                    (box :id "r" :grid-row 1 "r")
+                                    (box :id "d" "d")
+                                    (box :id "e" :grid-column 1 "e")
+                                    (box :id "f" "f")))
+      ;; C fills the hole B left; R widens the grid, so D and F use the
+      ;; new column only where earlier cells are taken.
+      (should (equal (origins root '("x" "a" "b" "c" "r" "d" "e" "f"))
+                     '(("x" 2 0) ("a" 0 0) ("b" 0 1) ("c" 4 0)
+                       ("r" 6 0) ("d" 4 1) ("e" 0 2) ("f" 6 1)))))
+    (ebox-test-with-mounted (buffer root
+                             '(grid :grid-auto-flow column
+                                    :grid-template-rows ((lh 1) (lh 1))
+                                    :grid-auto-columns (ch 2) :grid-auto-rows (lh 1)
+                                    (box :id "x" :grid-row 1 :grid-column 2 "x")
+                                    (box :id "a" "a")
+                                    (box :id "b" :grid-row (:span 2) "b")
+                                    (box :id "c" "c")))
+      (should (equal (origins root '("x" "a" "b" "c"))
+                     '(("x" 2 0) ("a" 0 0) ("b" 4 0) ("c" 0 1)))))))
+
 (ert-deftest ebox-render-stretched-heights-fill-definite-areas ()
   (ebox-test-with-mounted (buffer root
                            '(grid :width (ch 4) :height (lh 6)

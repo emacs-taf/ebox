@@ -499,17 +499,46 @@ and CROSS-GAP the gap between lines."
   "Place KIDS on a grid of at least COLUMNS by ROWS cells using FLOW.
 Return (ITEMS ROW-COUNT COLUMN-COUNT) with zero-based cells."
   (let ((cells (make-hash-table :test 'equal))
-        (ncols (max 1 columns)) (nrows (max 1 rows)) items)
+        (ncols (max 1 columns)) (nrows (max 1 rows)) items
+        ;; Every search scans in a fixed order and cells are never freed,
+        ;; so each one resumes after the occupied cells that start its
+        ;; order instead of rescanning them: placement stays linear in the
+        ;; number of items.  FIRST is the first unoccupied cell in FLOW
+        ;; order, valid while the grid keeps FIRST-EXTENT cells across
+        ;; that order; ROW-FIRST and COLUMN-FIRST hold the first
+        ;; unoccupied column of a row and row of a column.
+        (first (cons 0 0)) (first-extent nil)
+        (row-first (make-hash-table)) (column-first (make-hash-table)))
     (cl-labels
-        ((free-p (r c rs cs)
+        ((occupied-p (r c) (gethash (cons r c) cells))
+         (free-p (r c rs cs)
            (cl-loop for i from r below (+ r rs)
                     always (cl-loop for j from c below (+ c cs)
-                                    never (gethash (cons i j) cells))))
+                                    never (occupied-p i j))))
          (mark (r c rs cs)
            (cl-loop for i from r below (+ r rs)
                     do (cl-loop for j from c below (+ c cs)
                                 do (puthash (cons i j) t cells)))
-           (setq nrows (max nrows (+ r rs)) ncols (max ncols (+ c cs)))))
+           (setq nrows (max nrows (+ r rs)) ncols (max ncols (+ c cs))))
+         (first-in-row (r)
+           (let ((c (gethash r row-first 0)))
+             (while (occupied-p r c) (setq c (1+ c)))
+             (puthash r c row-first)))
+         (first-in-column (c)
+           (let ((r (gethash c column-first 0)))
+             (while (occupied-p r c) (setq r (1+ r)))
+             (puthash c r column-first)))
+         (first-free (major across)
+           ;; FIRST as (MAJOR-INDEX . MINOR-INDEX) below MAJOR major lines
+           ;; of ACROSS cells each.
+           (unless (eql first-extent across)
+             (setq first (cons 0 0) first-extent across))
+           (let ((i (car first)) (j (cdr first)))
+             (while (and (< i major)
+                         (if (eq flow 'column) (occupied-p j i) (occupied-p i j)))
+               (setq j (1+ j))
+               (when (>= j across) (setq i (1+ i) j 0)))
+             (setq first (cons i j)))))
       (dolist (kid kids)
         (let* ((cs (ebox-node-cs kid))
                (rp (ebox--grid-span-part (ebox--cv cs 'ebox/grid-row)))
@@ -522,27 +551,31 @@ Return (ITEMS ROW-COUNT COLUMN-COUNT) with zero-based cells."
            ((and (>= r 0) (>= c 0)) (setq position (cons r c)))
            ((>= r 0)
             (setq position
-                  (or (cl-loop for j from 0 to (max 0 (- ncols cs*))
+                  (or (cl-loop for j from (first-in-row r) to (max 0 (- ncols cs*))
                                when (free-p r j rs cs*) return (cons r j))
                       (cons r ncols))))
            ((>= c 0)
             (setq position
-                  (or (cl-loop for i from 0 to nrows
+                  (or (cl-loop for i from (first-in-column c) to nrows
                                when (free-p i c rs cs*) return (cons i c)))))
            ((eq flow 'column)
-            (setq position
-                  (or (cl-loop for j from 0 below ncols
-                               thereis (cl-loop for i from 0 to (max 0 (- nrows rs))
-                                                when (free-p i j rs cs*)
-                                                return (cons i j)))
-                      (cons 0 ncols))))
+            (let ((start (first-free ncols nrows)))
+              (setq position
+                    (or (cl-loop for j from (car start) below ncols
+                                 thereis (cl-loop for i from (if (= j (car start)) (cdr start) 0)
+                                                  to (max 0 (- nrows rs))
+                                                  when (free-p i j rs cs*)
+                                                  return (cons i j)))
+                        (cons 0 ncols)))))
            (t
-            (setq position
-                  (or (cl-loop for i from 0 below nrows
-                               thereis (cl-loop for j from 0 to (max 0 (- ncols cs*))
-                                                when (free-p i j rs cs*)
-                                                return (cons i j)))
-                      (cons nrows 0)))))
+            (let ((start (first-free nrows ncols)))
+              (setq position
+                    (or (cl-loop for i from (car start) below nrows
+                                 thereis (cl-loop for j from (if (= i (car start)) (cdr start) 0)
+                                                  to (max 0 (- ncols cs*))
+                                                  when (free-p i j rs cs*)
+                                                  return (cons i j)))
+                        (cons nrows 0))))))
           (mark (car position) (cdr position) rs cs*)
           (push (ebox-gridi--make :node kid :row (car position) :col (cdr position)
                                   :rspan rs :cspan cs*)
