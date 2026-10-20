@@ -294,9 +294,9 @@ Presses neither start region selection nor reach global commands.")
 mouse button; :bindings is an alist of key descriptions or vectors paired with
 zero-argument callbacks; :drag is a one-argument gesture callback and
 :drag-lock-modifier names a modifier that keeps the gesture alive after
-release.  :drag-edge non-nil reports an `edge' phase while a drag rests in the
-window's edge band; the callback owns any scrolling.  See the Ebox Commentary
-for the gesture protocol."
+release.  :drag-edge non-nil reports an `edge' phase while a drag rests in or
+past the window's edge band; the callback owns any scrolling.  See the Ebox
+Commentary for the gesture protocol."
   (unless (and (proper-list-p options) (zerop (% (length options) 2)))
     (error "Ebox keymap options must be an even plist"))
   (let ((map (make-sparse-keymap)) seen keys)
@@ -412,14 +412,38 @@ NOERROR is non-nil."
 (defvar ebox--drag-active nil
   "Non-nil inside the primary-button tracking loop.")
 
-(defun ebox--drag-position (position window)
-  "Return POSITION's text-area pixels inside WINDOW, or nil."
-  (let ((xy (posn-x-y position)) (edges (window-inside-pixel-edges window)))
-    (when (and (eq (posn-window position) window) (null (posn-area position))
-               (consp xy) (numberp (car xy)) (numberp (cdr xy))
-               (<= 0 (car xy)) (< (car xy) (- (nth 2 edges) (nth 0 edges)))
-               (<= 0 (cdr xy)) (< (cdr xy) (- (nth 3 edges) (nth 1 edges))))
-      xy)))
+(defun ebox--drag-pointer (position window)
+  "Return POSITION as (X . Y) pixels from WINDOW's text-area origin, or nil.
+POSITION may name any part of WINDOW's frame: another window, a mode line,
+header line, fringe or margin, or the frame itself when the pointer is past
+every window, as tracking reports while the button is held.  The result can
+therefore lie outside the text area.  Return nil when POSITION has no pixel
+coordinates in that frame."
+  (let ((xy (posn-x-y position)) (where (posn-window position))
+        (area (posn-area position)) (frame (window-frame window)))
+    (when-let* (((and (consp xy) (numberp (car xy)) (numberp (cdr xy))))
+                (origin
+                 (cond
+                  ((and (window-live-p where) (eq (window-frame where) frame))
+                   ;; Text coordinates count from the text area.  Side areas
+                   ;; count X from the window edge and Y from the text rows;
+                   ;; lines, bars and dividers count from the window corner.
+                   (let ((outer (window-pixel-edges where))
+                         (inner (window-inside-pixel-edges where)))
+                     (cons (nth 0 (if area outer inner))
+                           (nth 1 (if (memq area '(nil left-margin right-margin
+                                                       left-fringe right-fringe))
+                                      inner
+                                    outer)))))
+                  ((eq where frame) (cons 0 0)))))
+      (let ((inside (window-inside-pixel-edges window)))
+        (cons (- (+ (car origin) (car xy)) (nth 0 inside))
+              (- (+ (cdr origin) (cdr xy)) (nth 1 inside)))))))
+
+(defun ebox--drag-clamp (pointer width height)
+  "Return POINTER clamped to a WIDTH by HEIGHT text area."
+  (cons (min (max (car pointer) 0) (max 0 (1- width)))
+        (min (max (cdr pointer) 0) (max 0 (1- height)))))
 
 (defun ebox--event-owner (position)
   "Return the keymap owner node painted at buffer POSITION."
@@ -435,9 +459,10 @@ NOERROR is non-nil."
       (equal event ?\e)))
 
 (defun ebox--drag-edge-symbols (position width height band-x band-y)
-  "Return the edge symbols POSITION rests against in a WIDTH by HEIGHT window.
-POSITION is window-relative pixels; BAND-X and BAND-Y are the edge bands in
-pixels.  Symbols come in the fixed order `left', `right', `top', `bottom'."
+  "Return the edge symbols POSITION rests against or is past.
+WIDTH and HEIGHT are the text area's size.  POSITION is text-area pixels and
+may lie outside it; BAND-X and BAND-Y are the edge bands in pixels.  Symbols
+come in the fixed order `left', `right', `top', `bottom'."
   (let ((x (car position)) (y (cdr position)))
     (delq nil (list (and (<= x band-x) 'left)
                     (and (>= x (- width band-x)) 'right)
@@ -448,7 +473,7 @@ pixels.  Symbols come in the fixed order `left', `right', `top', `bottom'."
   "Lines and columns from a window edge where a drag reports edge intent.")
 
 (defvar ebox-drag-edge-interval 0.12
-  "Seconds between `edge' gestures while a drag rests in the edge band.")
+  "Seconds between `edge' gestures while a drag rests in or past the edge band.")
 
 (defun ebox--drag-edge-band ()
   "Return the configured drag edge band in lines or columns."
@@ -466,8 +491,9 @@ pixels.  Symbols come in the fixed order `left', `right', `top', `bottom'."
   "Track primary-button EVENT on its owner, calling CALLBACK per phase.
 DEFER-ACTIVE delays the active state until the first motion.  LOCK keeps the
 gesture alive after the first release until the next press.  EDGE reports an
-`edge' phase while the pointer rests in the window's edge band; the phase
-carries intent only and this tracker never scrolls."
+`edge' phase while the pointer rests in or past the window's edge band; the
+phase carries intent only and this tracker never scrolls.  The pointer may
+leave the text area: positions clamp to it and :overshoot reports the rest."
   (when ebox--drag-active
     (user-error "An Ebox drag is already active"))
   (let* ((press (event-start event)) (window (posn-window press)))
@@ -475,12 +501,12 @@ carries intent only and this tracker never scrolls."
       (user-error "Ebox drag requires a live text window"))
     (let* ((buffer (window-buffer window))
            (mount (ebox-buffer-mount buffer))
-           (start (ebox--drag-position press window))
+           (start (ebox--drag-pointer press window))
            (owner (and mount start
                        (with-current-buffer buffer
                          (ebox--event-owner (posn-point press)))))
            (button (event-basic-type event))
-           (position start) (last-event event) (reason 'input)
+           (position start) (pointer start) (last-event event) (reason 'input)
            (ebox--drag-active t)
            (mouse-fine-grained-tracking t)
            (window-edges (window-inside-pixel-edges window))
@@ -491,7 +517,7 @@ carries intent only and this tracker never scrolls."
            (band-x (max 1 (* band (frame-char-width frame))))
            (band-y (max 1 (* band (frame-char-height frame))))
            (interval (ebox--drag-edge-interval))
-           edge-since next-edge moved
+           edge-since next-edge elapsed moved
            done started finished active locked finishing)
       (cl-labels
           ((available ()
@@ -509,15 +535,23 @@ carries intent only and this tracker never scrolls."
                               :position (cons (car position) (cdr position))
                               :delta (cons (- (car position) (car start))
                                            (- (cdr position) (cdr start)))
+                              :overshoot (cons (- (car pointer) (car position))
+                                               (- (cdr pointer) (cdr position)))
                               :reason (and (eq phase 'cancel) reason)
                               :edges (and (eq phase 'edge)
                                           (ebox--drag-edge-symbols
-                                           position width height
-                                           band-x band-y))))))
+                                           pointer width height
+                                           band-x band-y))
+                              :elapsed (and (eq phase 'edge) elapsed)))))
+           (track (xy)
+             ;; Follow the pointer anywhere; positions stay in the text area.
+             (setq pointer xy
+                   position (ebox--drag-clamp xy width height)
+                   moved (or moved (not (equal xy start)))))
            (edge-tick ()
              (when (and edge moved (not locked) (not finishing) (not done))
                (let ((edges (ebox--drag-edge-symbols
-                             position width height band-x band-y))
+                             pointer width height band-x band-y))
                      (now (float-time)))
                  (if (null edges)
                      (setq edge-since nil next-edge nil)
@@ -525,7 +559,11 @@ carries intent only and this tracker never scrolls."
                      (setq edge-since now
                            next-edge (+ now interval)))
                    (when (and next-edge (>= now next-edge))
-                     (setq next-edge (+ now interval))
+                     ;; Wall time since the previous edge phase began, so a
+                     ;; slow callback can scroll by time and keep its speed.
+                     (setq elapsed (- now edge-since)
+                           edge-since now
+                           next-edge (+ now interval))
                      (emit 'edge)
                      (redisplay t)))))))
         (when (and owner (available))
@@ -551,16 +589,14 @@ carries intent only and this tracker never scrolls."
                               (push next unread-command-events)
                               (setq reason 'target-unavailable done t))
                             (when (and (not done) (not finishing)
-                                       (mouse-movement-p next)
-                                       (ebox--drag-position (event-start next) window))
+                                       (mouse-movement-p next))
                               ;; Merge already pending motions, bounded per round.
                               (let ((count 1) (poll t))
                                 (while (and poll (< count 64))
                                   (let ((candidate (read-event nil nil 0)))
                                     (cond
                                      ((null candidate) (setq poll nil))
-                                     ((and (mouse-movement-p candidate)
-                                           (ebox--drag-position (event-start candidate) window))
+                                     ((mouse-movement-p candidate)
                                       (setq next candidate count (1+ count)))
                                      (t (push candidate unread-command-events)
                                         (setq poll nil)))))))
@@ -578,31 +614,27 @@ carries intent only and this tracker never scrolls."
                                  ((ebox--escape-event-p next)
                                   (setq reason 'quit done t))
                                  ((and locked primary-down)
-                                  (if-let* ((xy (ebox--drag-position (event-start next) window)))
-                                      (progn
-                                        (setq position xy finished t finishing t locked nil)
-                                        (emit 'end)
-                                        (redisplay t))
-                                    (push next unread-command-events)
-                                    (setq reason 'window-left done t)))
+                                  (when-let* ((xy (ebox--drag-pointer (event-start next) window)))
+                                    (track xy))
+                                  (setq finished t finishing t locked nil)
+                                  (emit 'end)
+                                  (redisplay t))
                                  ((or release motion)
                                   (when (and defer-active motion (not active))
                                     (ebox--set-mount-state mount 'active owner)
                                     (setq active t))
-                                  (let ((xy (ebox--drag-position
+                                  (let ((xy (ebox--drag-pointer
                                              (if release (event-end next) (event-start next))
-                                             window)))
+                                             window))
+                                        (before position))
+                                    (when xy (track xy))
                                     (cond
-                                     ((null xy) (setq reason 'window-left done t))
                                      (release
-                                      (setq position xy)
                                       (if (and lock (not locked))
                                           (progn (setq locked t) (emit 'move))
                                         (setq finished t done t)
                                         (emit 'end)))
-                                     ((not (equal xy position))
-                                      (setq position xy
-                                            moved (or moved (not (equal xy start))))
+                                     ((not (equal position before))
                                       (emit 'move)))
                                     (redisplay t)))
                                  ((and primary-down (not finishing))

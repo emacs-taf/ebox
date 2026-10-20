@@ -56,15 +56,19 @@
 ;; A :drag callback receives one plist per phase.  :phase is start, move, end,
 ;; cancel or edge.  :event is the native event that produced the phase (the
 ;; last read event for edge); :node, :window and :buffer identify the retained
-;; owner and its display; :start and :position are window-relative (X . Y)
-;; pixels and :delta is the displacement from :start.  A cancel also carries
-;; :reason: window-left, target-unavailable, input, quit or error.  An edge
-;; phase carries :edges, the window edges the pointer rests against, in the
-;; fixed order left, right, top, bottom.
+;; owner and its display; :start and :position are (X . Y) pixels in the
+;; window's text area and :delta is the displacement from :start.  The pointer
+;; may leave the text area while the button is held: :position then stays at
+;; the nearest point inside it and :overshoot is the pointer's (DX . DY)
+;; distance past it, negative to the left and above, (0 . 0) inside.  A cancel
+;; also carries :reason: target-unavailable, input, quit or error.  An edge
+;; phase carries :edges, the window edges the pointer rests against or has
+;; passed, in the fixed order left, right, top, bottom, and :elapsed, the
+;; seconds since the previous edge phase began or, for the first, since the
+;; pointer reached the band.
 ;;
-;; A gesture ends with end on release, or with cancel when the target
-;; disappears, the pointer leaves the window, Escape is pressed or another
-;; input arrives.  Escape cancels with quit and is consumed; other input is
+;; A gesture ends with end on release, wherever the pointer is, or with cancel
+;; when the target disappears, Escape is pressed or another input arrives.  Escape cancels with quit and is consumed; other input is
 ;; preserved.  The window system can lose a release, so a new press of the
 ;; primary button ends an unlocked gesture with end at the last position, and
 ;; the press is then handled as usual.  While a gesture is tracked, a shown
@@ -78,7 +82,7 @@
 ;; Lines and columns from a window edge where a drag reports edge intent.
 ;;
 ;; Variable: ebox-drag-edge-interval
-;; Seconds between edge gestures while a drag rests in the edge band.
+;; Seconds between edge gestures while a drag rests in or past the edge band.
 ;;
 ;; Function: ebox-display-metrics (&optional buffer-or-name)
 ;;;###autoload (autoload 'ebox-display-metrics "ebox" nil nil)

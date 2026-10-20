@@ -121,6 +121,77 @@ BODY can call `ebox-drag-test-press' and `ebox-drag-test-release'."
         (funcall show-help-function "after")
         (should (equal (car shown) "after"))))))
 
+(ert-deftest ebox-drag-follows-the-pointer-past-the-window ()
+  "A drag past the text area keeps going, clamps :position and ends on release."
+  (let (gestures)
+    (ebox-drag-test-with-target
+        (ebox-keymap-create
+         :drag (lambda (gesture)
+                 (push (list (plist-get gesture :phase)
+                             (plist-get gesture :position)
+                             (plist-get gesture :overshoot)
+                             (plist-get gesture :reason))
+                       gestures)))
+      (let* ((frame (window-frame window))
+             (outer (window-pixel-edges window))
+             (bottom (1- height))
+             ;; Three pixels below the text area, over the mode line, whose
+             ;; coordinates count from the window corner.
+             (mode-line (list window 'mode-line
+                              (cons (+ (- (nth 0 window-edges) (nth 0 outer)) 6)
+                                    (+ (- (nth 3 window-edges) (nth 1 outer)) 2))
+                              2))
+             ;; Thirty pixels below the text area, past every window, in
+             ;; frame coordinates.
+             (beyond (list frame nil
+                           (cons (+ (nth 0 window-edges) 6)
+                                 (+ (nth 3 window-edges) 29))
+                           3)))
+        (ebox-drag-test-play
+         command press
+         (list (cons 0.0 (funcall move '(5 . 5)))
+               (cons 0.1 (list 'mouse-movement mode-line))
+               (cons 0.2 (list 'mouse-movement beyond))
+               (cons 0.3 (list 'drag-mouse-1 (list window position '(4 . 4) 0)
+                               beyond))))
+        (should (equal (nreverse gestures)
+                       `((start (4 . 4) (0 . 0) nil)
+                         (move (5 . 5) (0 . 0) nil)
+                         (move (6 . ,bottom) (0 . 3) nil)
+                         (end (6 . ,bottom) (0 . 30) nil))))))))
+
+(ert-deftest ebox-drag-edge-reports-overshoot-and-elapsed-past-the-window ()
+  "Edge phases continue past the window with the distance and the time between."
+  (let (edges)
+    (ebox-drag-test-with-target
+        (ebox-keymap-create
+         :drag-edge t
+         :drag (lambda (gesture)
+                 (when (eq (plist-get gesture :phase) 'edge)
+                   (push (list (plist-get gesture :edges)
+                               (plist-get gesture :position)
+                               (plist-get gesture :overshoot)
+                               (plist-get gesture :elapsed))
+                         edges))))
+      (let* ((middle (/ width 2))
+             (beyond (list (window-frame window) nil
+                           (cons (+ (nth 0 window-edges) middle)
+                                 (+ (nth 3 window-edges) 39))
+                           2)))
+        (ebox-drag-test-play
+         command press
+         (list (cons 0.0 (funcall move '(5 . 5)))
+               (cons 0.05 (list 'mouse-movement beyond))
+               (cons 0.6 (list 'drag-mouse-1 (list window position '(4 . 4) 0)
+                               beyond))))
+        (should (>= (length edges) 2))
+        (dolist (edge edges)
+          (should (equal (nth 0 edge) '(bottom)))
+          (should (equal (nth 1 edge) (cons middle (1- height))))
+          (should (equal (nth 2 edge) '(0 . 40)))
+          (should (numberp (nth 3 edge)))
+          (should (>= (nth 3 edge) ebox-drag-edge-interval)))))))
+
 (ert-deftest ebox-drag-edge-reports-intent-on-each-window-edge ()
   "An opted-in drag reports the bottom, top, left and right edge in turn."
   (dolist (side '(bottom top left right))

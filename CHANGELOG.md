@@ -7,8 +7,9 @@ All notable changes to Ebox are documented here.
 ### Added
 
 - `ebox-keymap-create` accepts `:drag-edge`: a drag that has moved and rests
-  in a window edge band then receives repeating `edge` phases whose `:edges`
-  name the touched edges.  The tracker reports intent only; the callback owns
+  in or past a window edge band then receives repeating `edge` phases whose
+  `:edges` name the touched edges and whose `:elapsed` gives the seconds since
+  the previous one.  The tracker reports intent only; the callback owns
   the scroll.  `ebox-drag-edge-band` and `ebox-drag-edge-interval` set the
   band and cadence, and the gesture protocol is documented in the entry
   Commentary.
@@ -153,6 +154,14 @@ All notable changes to Ebox are documented here.
   `eln-cache`, which Emacs loads in place of the bytecode.
 
 ### Changed
+
+- A drag keeps tracking the pointer after it leaves the window's text area,
+  onto the mode line, another window or past the frame, instead of
+  cancelling with reason `window-left`, which no longer exists.  `:position`
+  stays clamped to the text area, the new `:overshoot` gives the pointer's
+  `(DX . DY)` distance past it, and a release anywhere ends the gesture with
+  `end`.  Handlers that relied on `window-left` to
+  revert a drag now receive `end` at the clamped position.
 
 - Tab visits focus stops in ascending `:tab-index` and then tree order
   instead of screen rows, so a sidebar's controls all come before the pane

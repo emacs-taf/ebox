@@ -860,6 +860,16 @@
       "purpose": "A new primary press during an unlocked drag ends it with end at the last position and is replayed to start its own gesture."
     },
     {
+      "name": "ebox-drag-follows-the-pointer-past-the-window",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "A drag that leaves the text area over the mode line or past every window keeps tracking with :position clamped and :overshoot giving the distance, and a release there ends it."
+    },
+    {
+      "name": "ebox-drag-edge-reports-overshoot-and-elapsed-past-the-window",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "Edge phases continue while the pointer is past the window, naming the passed edge with the overshoot and the seconds since the previous phase."
+    },
+    {
       "name": "ebox-drag-hides-tooltips-and-help-while-tracking",
       "file": "tests/ebox-drag-tests.el",
       "purpose": "A drag in a graphic frame clears the shown help, suppresses help display while tracking and restores the help function afterwards."
