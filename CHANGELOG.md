@@ -23,6 +23,12 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- `ebox-node-scroll-offset` reports the offset a scroller shows.  When
+  content shrank below a scrolled offset, the scroller showed its last lines
+  but kept reporting, and scrolling from, the old offset: the next scroll
+  command moved nothing visible and passed the remainder to the window.
+  Scrolling now starts from the shown offset.
+
 - A drag no longer keeps moving after the window system loses its button
   release.  A new press of the primary button ends an unlocked drag with
   `end` at its last position and then starts its own gesture; it used to

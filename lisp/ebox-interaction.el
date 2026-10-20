@@ -1998,8 +1998,14 @@ cannot repaint and keeps no allocated paint."
     (nreverse chain)))
 
 (defun ebox-node-scroll-offset (node)
-  "Return NODE's scroll offset in lines."
-  (ebox-node-scroll node))
+  "Return NODE's scroll offset in lines.
+A laid-out node reports the offset it shows: an offset past content that
+shrank clamps to the content's end."
+  (let ((geo (ebox-node-layout node))
+        (offset (ebox-node-scroll node)))
+    (if geo
+        (max 0 (min offset (- (ebox-geo-ch geo) (ebox-geo-vh geo))))
+      offset)))
 
 (defun ebox-node-set-scroll (node offset)
   "Scroll NODE's content to OFFSET lines, clamped; return the applied offset.
@@ -2008,10 +2014,11 @@ showing the end as content grows; any smaller offset releases the pin.
 A changed offset is reported to NODE's `:scroll' function after settling."
   (let* ((geo (ebox-node-layout node))
          (limit (if geo (max 0 (- (ebox-geo-ch geo) (ebox-geo-vh geo))) 0))
-         (offset (max 0 (min offset limit))))
-    (setf (ebox-node-pinned node) (>= offset limit))
-    (unless (= offset (ebox-node-scroll node))
-      (setf (ebox-node-scroll node) offset)
+         (offset (max 0 (min offset limit)))
+         (shown (ebox-node-scroll-offset node)))
+    (setf (ebox-node-pinned node) (>= offset limit)
+          (ebox-node-scroll node) offset)
+    (unless (= offset shown)
       (let ((mount (ebox--mount-of node)))
         (if (and geo mount (zerop (logand (ebox-node-dirty node) 15)))
             ;; Scrolling changes which content lines show, not the layout.
@@ -2058,7 +2065,7 @@ its bottom at the last line, as far as the content allows."
   (let ((rest delta))
     (dolist (node (ebox--scroll-chain position))
       (unless (zerop rest)
-        (let* ((old (ebox-node-scroll node))
+        (let* ((old (ebox-node-scroll-offset node))
                (new (ebox-node-set-scroll node (+ old rest))))
           (setq rest (- rest (- new old))))))
     (unless (zerop rest)

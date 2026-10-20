@@ -570,6 +570,11 @@
       "purpose": "Programmatic scroll clamps the offset and repaints the visible lines."
     },
     {
+      "name": "ebox-scroll-offset-follows-content-that-shrinks-below-it",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "A scroller whose content shrinks below its offset reports the clamped offset it shows, and a scroll command moves from there without scrolling the window."
+    },
+    {
       "name": "ebox-end-anchored-scroll-follows-growing-content-while-pinned",
       "file": "tests/ebox-scroll-input-tests.el",
       "purpose": "An end-anchored scroller starts at and follows its last line until scrolled away, and rejects unknown anchors."

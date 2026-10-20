@@ -47,6 +47,33 @@ F "))
       (should (ebox-test-buffer-matches-render-p root buffer))
       (should-error (ebox-node-create 'box '(:scroll-anchor middle))))))
 
+(ert-deftest ebox-scroll-offset-follows-content-that-shrinks-below-it ()
+  (let ((ebox-scroll-step 1))
+    (ebox-test-with-mounted (buffer root
+                             '(column (text "Header")
+                                      (box :id "scroller" :width (ch 4) :height (lh 2)
+                                           :overflow scroll
+                                           (column :id "list"
+                                                   (text "A") (text "B") (text "C")
+                                                   (text "D") (text "E")))))
+      (let ((scroller (car (ebox-selector-query root "#scroller")))
+            (list (car (ebox-selector-query root "#list"))))
+        (should (= (ebox-node-set-scroll scroller 3) 3))
+        (ebox-node-replace-children
+         list (mapcar #'ebox-text-create '("A" "B" "C")))
+        ;; The offset reported and scrolled from is the one shown.
+        (should (= (ebox-node-scroll-offset scroller) 1))
+        (should (equal (ebox-test-buffer-text buffer) "Header \nB  \nC  "))
+        (save-window-excursion
+          (switch-to-buffer buffer)
+          (goto-char (point-min))
+          (forward-line 1)
+          (ebox-scroll-up)
+          (should (= (window-start) (point-min))))
+        (should (= (ebox-node-scroll-offset scroller) 0))
+        (should (equal (ebox-test-buffer-text buffer) "Header \nA  \nB  "))
+        (should (ebox-test-buffer-matches-render-p root buffer))))))
+
 (ert-deftest ebox-scroll-into-view-moves-nested-scrollers-minimally ()
   (ebox-test-with-mounted (buffer root
                            '(box :width (ch 4) :height (lh 3) :overflow scroll

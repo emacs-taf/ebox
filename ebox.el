@@ -374,7 +374,9 @@
 ;;
 ;; Function: ebox-node-scroll-offset (node)
 ;;;###autoload (autoload 'ebox-node-scroll-offset "ebox" nil nil)
-;; Return NODE's scroll offset in lines.
+;; Return NODE's scroll offset in lines.  A laid-out node reports the offset
+;; it shows: an offset past content that shrank clamps to the content's end,
+;; and scrolling commands move from that offset.
 ;;
 ;; Function: ebox-node-set-scroll (node offset)
 ;;;###autoload (autoload 'ebox-node-set-scroll "ebox" nil nil)
