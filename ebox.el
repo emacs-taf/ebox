@@ -19,6 +19,9 @@
 ;; update restyles, relayouts and repaints only the affected boxes and writes
 ;; only the changed lines.  Updates outside `ebox-with-batch' flush at once.
 ;;
+;; `swiftc' is optional: on macOS it compiles a small helper that renders
+;; color emoji, and without it emoji fall back to ordinary text.
+;;
 ;; This Commentary is the supported API inventory; unlisted symbols are
 ;; internal.  Workflows are in the ETAF Reference Manual.
 ;;
@@ -118,7 +121,7 @@
 ;; background color, so window space beyond the laid-out rows matches it.
 ;; OPTIONS accepts :width and :height for a fixed viewport, plus :observer,
 ;; a function of buffer and report installed before the first flush. Nil
-;; disables observation. Invalid observers signal wrong-type-argument before
+;; disables observation.  Invalid observers signal wrong-type-argument before
 ;; replacing an existing mount; reports follow ebox-buffer-set-observer.
 ;;
 ;; Function: ebox-render (input)
