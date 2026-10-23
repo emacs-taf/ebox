@@ -193,12 +193,18 @@ INSET is (TOP . BOTTOM) pixels left empty above and below the image."
                    (width (* columns cw))
                    (height (- (* rows lh) top bottom))
                    (descriptor (and (> height 0)
-                                    (apply #'create-image data type t :width width
-                                           :height height :scale 1 :ascent ascent
-                                           :margin 0
-                                           (and ebox-image--background
-                                                (list :background
-                                                      ebox-image--background))))))
+                                    (if (eq type 'canvas)
+                                        ;; A canvas descriptor owns a live
+                                        ;; pixel buffer; recreating it would
+                                        ;; drop its :id and data dimensions,
+                                        ;; so slice the published one.
+                                        source
+                                      (apply #'create-image data type t :width width
+                                             :height height :scale 1 :ascent ascent
+                                             :margin 0
+                                             (and ebox-image--background
+                                                  (list :background
+                                                        ebox-image--background)))))))
         ;; A type that cannot decode/scale this source is not usable.  Decoding
         ;; here also warms Emacs' cache before a caller publishes the block.
         ;; Each row is one glyph showing a full-width slice: redisplay
