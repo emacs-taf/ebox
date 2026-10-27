@@ -124,13 +124,28 @@ Call after installing converters or changing their configuration."
          (symbolp (plist-get (cdr source) :type))
          (or (stringp (plist-get (cdr source) :data))
              (stringp (plist-get (cdr source) :file))))
-    (let ((owned (copy-tree source)))
-      (if-let* ((file (plist-get (cdr owned) :file))
-                (normalized (ebox-image--source file)))
-          (progn
-            (setcdr owned (plist-put (cdr owned) :file (car normalized)))
-            (list owned (list owned (cadr normalized))))
-        (list owned owned))))
+    (cond
+     ;; A canvas owns a live pixel buffer that its producer rewrites in
+     ;; place, so the payload is not part of its identity.  Comparing two
+     ;; multi-megabyte buffers on every layout would cost more than drawing
+     ;; the frame, and the pixels never describe a different image.
+     ((eq (plist-get (cdr source) :type) 'canvas)
+      (let ((props (cdr source)))
+        (list source
+              (list 'canvas
+                    (plist-get props :id)
+                    (plist-get props :data-width)
+                    (plist-get props :data-height)
+                    (plist-get props :scale)
+                    (plist-get props :ascent)))))
+     (t
+      (let ((owned (copy-tree source)))
+        (if-let* ((file (plist-get (cdr owned) :file))
+                  (normalized (ebox-image--source file)))
+            (progn
+              (setcdr owned (plist-put (cdr owned) :file (car normalized)))
+              (list owned (list owned (cadr normalized))))
+          (list owned owned))))))
    (t (error "Ebox image source must be a file or image descriptor"))))
 
 (defun ebox-image--metrics (frame)
@@ -183,9 +198,12 @@ descriptor's ascent percentage."
 (defun ebox-image--graphics (source columns rows metrics frame &optional inset)
   "Prepare SOURCE as COLUMNS by ROWS display slices using METRICS on FRAME.
 INSET is (TOP . BOTTOM) pixels left empty above and below the image."
-  (let* ((data (ebox-image--bytes source))
-         (type (image-type data (and (consp source)
-                                     (plist-get (cdr source) :type)) t)))
+  (let* ((canvas (and (consp source)
+                      (eq (plist-get (cdr source) :type) 'canvas)))
+         (data (unless canvas (ebox-image--bytes source)))
+         (type (if canvas 'canvas
+                 (image-type data (and (consp source)
+                                       (plist-get (cdr source) :type)) t))))
     (when (image-type-available-p type)
       (pcase-let* ((`(,cw ,lh ,ascent) metrics)
                    (top (min (or (car inset) 0) (1- lh)))

@@ -154,4 +154,30 @@ Both preparations have already been laid out, as cached images have."
       (put 'ebox-file-load-companion 'test-origin nil)
       (delete-directory directory t))))
 
+(ert-deftest ebox-image-canvas-preparation-ignores-its-live-pixels ()
+  "A canvas keeps one preparation while its producer rewrites pixels.
+The payload is a live buffer, so the cached identity must not compare it:
+two preparations with the same :id and size are the same image."
+  (let* ((first (ebox-image-prepare
+                 '(image :type canvas :id canvas-live-test :data "aaaa"
+                         :data-width 4 :data-height 1 :scale 1)
+                 2 1 :adapter 'placeholder))
+         (second (ebox-image-prepare
+                  '(image :type canvas :id canvas-live-test :data "bbbb"
+                          :data-width 4 :data-height 1 :scale 1)
+                  2 1 :adapter 'placeholder)))
+    (should (eq first second))))
+
+(ert-deftest ebox-image-canvas-preparation-distinguishes-ids ()
+  "Two canvases with different ids stay distinct preparations."
+  (let ((left (ebox-image-prepare
+               '(image :type canvas :id canvas-left-test :data "aaaa"
+                       :data-width 4 :data-height 1 :scale 1)
+               2 1 :adapter 'placeholder))
+        (right (ebox-image-prepare
+                '(image :type canvas :id canvas-right-test :data "aaaa"
+                        :data-width 4 :data-height 1 :scale 1)
+                2 1 :adapter 'placeholder)))
+    (should-not (eq left right))))
+
 ;;; ebox-image-file-tests.el ends here
