@@ -898,6 +898,16 @@
       "name": "ebox-drag-edge-requires-the-keymap-option",
       "file": "tests/ebox-drag-tests.el",
       "purpose": "Without :drag-edge a drag keeps its start, move and end phases and reports no edge intent."
+    },
+    {
+      "name": "ebox-image-canvas-preparation-ignores-its-live-pixels",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "A canvas keeps one preparation while its producer rewrites pixels."
+    },
+    {
+      "name": "ebox-image-canvas-preparation-distinguishes-ids",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "Two canvases with different ids stay distinct preparations."
     }
   ]
 }
