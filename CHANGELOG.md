@@ -6,6 +6,12 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Pointer hover no longer sets `track-mouse' in a mounted buffer.  A painted
+  `help-echo' probe paints entry and a short guard follows the pointer until
+  no feedback remains, so motion over another window never runs a command
+  here; a global click-ripple hook could draw on every move.  Each run's
+  original help value is preserved through the probe.
+
 - A canvas no taller than its window stays at its first line after a rewrite:
   the window start is no longer restored to a line the rewritten content no
   longer reaches, so a panel that shrank does not leave its window blank.

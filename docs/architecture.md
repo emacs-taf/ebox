@@ -235,6 +235,17 @@ declarations over it, because a display uses `mouse-face' instead of the text's
 `face': a hover style that only names a fill therefore keeps the label's ink,
 weight and decoration instead of falling back to the frame's default face.
 
+Hover feedback must know where the pointer is, but a buffer that keeps
+`track-mouse' set turns every motion on the frame into input, including motion
+over another window; the command loop then runs that window's
+`mouse-movement' binding with the mounted buffer current.  Ebox therefore
+paints a `help-echo' probe on each hover target: Emacs calls it on pointer
+movement without `track-mouse', and it paints entry and starts a short guard.
+The guard follows the pointer only while feedback is painted and restores it
+once the pointer is elsewhere, so re-entry goes through the same probe.  Each
+run's original help stays in `ebox-help-echo' and the probe returns it, keeping
+echo-area and tooltip output unchanged.
+
 Every state face follows that rule: the state style declares only the
 properties it changes, and the native face restates the node's own ink, weight,
 slant and decoration.  The resting face is shared and interned, so a state face

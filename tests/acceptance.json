@@ -310,6 +310,21 @@
       "purpose": "Descendants inherit an ancestor's help, pointer and hover feedback unless they set it to nil."
     },
     {
+      "name": "ebox-hover-tracks-the-pointer-only-inside-its-buffer",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Mounting a hoverable tree never enables frame-wide mouse tracking; the painted help probe paints entry and starts the pointer guard, and motion resolved in another buffer releases the paint."
+    },
+    {
+      "name": "ebox-hover-content-follows-pointer-entry-and-leave",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Pointer entry through the painted help probe shows hover content, and leaving the target restores the resting text."
+    },
+    {
+      "name": "ebox-hover-probe-keeps-an-ancestors-help",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "A hover probe with no help of its own yields to an ancestor's help-echo, while an explicit nil or an inner help still blocks it."
+    },
+    {
       "name": "ebox-hover-paints-over-a-nodes-own-background",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Hover paint covers a node's own background too; suppressing hover for a selected item is application policy, not an engine guess."

@@ -493,12 +493,86 @@ line lies under an unrelated overlay; focus reveals it."
                                                   :hover-style nil "Own")))
     (let ((plain (ebox-node-position (car (ebox-selector-query root "#plain"))))
           (own (ebox-node-position (car (ebox-selector-query root "#own")))))
-      (should (equal (get-text-property plain 'help-echo) "Outer"))
+      (should (equal (funcall (get-text-property plain 'help-echo)
+                              (selected-window) (current-buffer) plain)
+                     "Outer"))
       (should (eq (get-text-property plain 'pointer) 'hand))
       (should (get-text-property plain 'mouse-face))
       (should-not (get-text-property own 'help-echo))
       (should-not (get-text-property own 'pointer))
       (should-not (get-text-property own 'mouse-face)))))
+
+(ert-deftest ebox-hover-tracks-the-pointer-only-inside-its-buffer ()
+  "Mounting alone never enables frame-wide mouse tracking.
+The painted help-echo probe paints entry and starts the pointer guard; motion
+resolved in another buffer releases the paint without enabling `track-mouse'."
+  (ebox-test-with-mounted (buffer root '(box :id "hover"
+                                             :hover-style (:background-color "#123456")
+                                             "Hover"))
+    (save-window-excursion
+      (switch-to-buffer buffer)
+      (should-not (local-variable-p 'track-mouse))
+      (let* ((position (ebox-node-position (car (ebox-selector-query root "#hover"))))
+             (help (get-text-property position 'help-echo)))
+        (should (functionp help))
+        ;; The painted probe paints the target and starts the pointer guard
+        ;; without making Emacs report motion for the whole frame.
+        (funcall help (selected-window) (current-buffer) position)
+        (should-not (local-variable-p 'track-mouse))
+        (should (equal (get-char-property position 'face) '(:background "#123456")))
+        ;; A motion event resolved in another buffer releases both the paint
+        ;; and the guard.
+        (let ((other (generate-new-buffer " *ebox-other*")))
+          (unwind-protect
+              (let ((window (split-window (selected-window))))
+                (unwind-protect
+                    (progn
+                      (set-window-buffer window other)
+                      (let ((command (key-binding [mouse-movement])))
+                        (should (commandp command))
+                        (funcall command
+                                 (list 'mouse-movement
+                                       (list window (point-min) '(0 . 0) 0)))))
+                  (delete-window window)))
+            (kill-buffer other)))
+        (should-not (local-variable-p 'track-mouse))
+        (should-not (equal (get-char-property position 'face)
+                           '(:background "#123456")))))))
+
+(ert-deftest ebox-hover-content-follows-pointer-entry-and-leave ()
+  "The help probe shows hover content on entry; leaving restores the text."
+  (ebox-test-with-mounted (buffer root '(box :id "row" :hover-content "Play" "Song"))
+    (save-window-excursion
+      (switch-to-buffer buffer)
+      (let* ((position (ebox-node-position (car (ebox-selector-query root "#row"))))
+             (help (get-text-property position 'help-echo)))
+        (should (functionp help))
+        (funcall help (selected-window) (current-buffer) position)
+        (should (string-match-p "Play" (buffer-substring-no-properties
+                                         (point-min) (point-max))))
+        (funcall (key-binding [mouse-movement])
+                 (list 'mouse-movement
+                       (list (selected-window) (point-max) '(0 . 0) 0)))
+        (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+          (should (string-match-p "Song" text))
+          (should-not (string-match-p "Play" text)))))))
+
+(ert-deftest ebox-hover-probe-keeps-an-ancestors-help ()
+  "A hover probe records no help of its own, so an ancestor's help still fills.
+An explicit nil or an inner help keeps blocking it."
+  (ebox-test-with-mounted
+      (buffer root '(box :help-echo "Outer"
+                         (box :id "probe"
+                              :hover-style (:background-color "#123456") "Probe")
+                         (box :id "own" :help-echo nil
+                              :hover-style (:background-color "#123456") "Own")))
+    (cl-flet ((help (id)
+                (let ((position (ebox-node-position
+                                 (car (ebox-selector-query root id)))))
+                  (funcall (get-text-property position 'help-echo)
+                           (selected-window) (current-buffer) position))))
+      (should (equal (help "#probe") "Outer"))
+      (should-not (help "#own")))))
 
 (ert-deftest ebox-hover-face-restates-the-nodes-own-paint ()
   "A background-only hover style keeps the label readable.

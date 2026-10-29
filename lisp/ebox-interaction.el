@@ -111,6 +111,11 @@ one face object."
                                                 (plist-get inter :hover-style)))))))
         (setf (ebox-node-inter-cache node) props))))
 
+(defconst ebox--help-absent (make-symbol "ebox-help-absent")
+  "`ebox-help-echo' marker for a probe run with no help of its own.
+A later ancestor help fill replaces it; an explicit nil or an inner value
+still blocks the ancestor.")
+
 (defun ebox--fill-property (string property value)
   "Put PROPERTY VALUE on the parts of STRING where it is absent.
 A present nil, painted by an inner node, keeps blocking VALUE."
@@ -121,21 +126,94 @@ A present nil, painted by an inner node, keeps blocking VALUE."
           (put-text-property pos next property value string))
         (setq pos next)))))
 
+(defun ebox--fill-help (string value)
+  "Fill STRING's `help-echo' with VALUE, composing painted hover probes.
+A probe records its run's original help in `ebox-help-echo'.  When that run
+had no help of its own, the ancestor's VALUE becomes the original; an
+explicit nil or an inner node's help still blocks it."
+  (let ((pos 0) (len (length string)))
+    (while (< pos len)
+      (let* ((next (min (or (next-single-property-change pos 'help-echo string len)
+                            len)
+                        (or (next-single-property-change
+                             pos 'ebox-help-echo string len)
+                            len)))
+             (props (text-properties-at pos string)))
+        (cond
+         ((not (eq (plist-get props 'help-echo) #'ebox--hover-help))
+          (unless (plist-member props 'help-echo)
+            (put-text-property pos next 'help-echo value string)))
+         ((eq (plist-get props 'ebox-help-echo) ebox--help-absent)
+          (put-text-property pos next 'ebox-help-echo value string)))
+        (setq pos next)))))
+
 (defun ebox--decorate-interactive (node line &optional fresh)
   "Return LINE carrying NODE's interaction properties.
 LINE is copied first unless FRESH says the caller owns it.  A hidden node
 paints nothing, so it carries no interaction feedback either."
   (let* ((hidden (ebox--hidden-p node))
+         (inter (ebox-node-inter node))
          (props (and (not hidden) (ebox--inter-text-properties node)))
-         (copy (if fresh line (copy-sequence line))))
-    (when (and props ebox--current-mount
-               (or (plist-get (ebox-node-inter node) :hover-content)
-                   (plist-get (ebox-node-inter node) :hover-style)))
-      (setf (ebox-mount-hover-p ebox--current-mount) t))
+         (copy (if fresh line (copy-sequence line)))
+         (hover-style (and (not hidden) (plist-get inter :hover-style)))
+         (hover-content (and (not hidden) (plist-get inter :hover-content))))
     (while props
-      (ebox--fill-property copy (car props) (cadr props))
+      (if (eq (car props) 'help-echo)
+          (ebox--fill-help copy (cadr props))
+        (ebox--fill-property copy (car props) (cadr props)))
       (setq props (cddr props)))
+    (when (and ebox--current-mount (or hover-style hover-content))
+      ;; Pointer feedback needs the pointer's node.  A painted help-echo
+      ;; probe reports entry and a short guard follows it, so no buffer
+      ;; enables `track-mouse' and motion over another window never becomes
+      ;; a command here.
+      (setf (ebox-mount-hover-p ebox--current-mount) t)
+      (ebox--fill-hover-help copy (not hover-content)))
     copy))
+
+(defun ebox--hover-help (window object position)
+  "Report pointer entry at POSITION and return the painted help text.
+Painted as `help-echo' on hover targets.  Emacs calls it on pointer movement
+without `track-mouse', so entering a mounted buffer paints hover and starts the
+pointer guard; returning the run's original help keeps echo-area and tooltip
+output unchanged."
+  (let ((original (and (integer-or-marker-p position)
+                       (or (bufferp object) (stringp object))
+                       (get-text-property position 'ebox-help-echo object))))
+    (when (eq original ebox--help-absent) (setq original nil))
+    (when (and (bufferp object) (integer-or-marker-p position))
+      (with-current-buffer object
+        (ebox--pointer-enter window position)
+        (unless (equal original ebox--pointer-help)
+          ;; `show_help_echo' stops at a function returning nil, so clear a
+          ;; help it already shows the way a plain nil property would.
+          (when (and (null original) ebox--pointer-help
+                     (functionp show-help-function))
+            (funcall show-help-function nil))
+          (setq-local ebox--pointer-help original))))
+    (if (functionp original)
+        (funcall original window object position)
+      original)))
+
+(defun ebox--fill-hover-help (string mouse-face-only)
+  "Give STRING a `help-echo' probe that reports pointer entry.
+MOUSE-FACE-ONLY non-nil installs it only on runs carrying `mouse-face', so an
+explicit nil hover blocker keeps its help value and paints no feedback.  Each
+run's original help is kept in `ebox-help-echo' for the probe to return."
+  (let ((pos 0) (len (length string)))
+    (while (< pos len)
+      (let* ((next (or (next-single-property-change pos 'help-echo string len)
+                       len))
+             (props (text-properties-at pos string)))
+        (when (or (not mouse-face-only) (plist-get props 'mouse-face))
+          (unless (plist-member props 'ebox-help-echo)
+            (put-text-property pos next 'ebox-help-echo
+                               (if (plist-member props 'help-echo)
+                                   (plist-get props 'help-echo)
+                                 ebox--help-absent)
+                               string))
+          (put-text-property pos next 'help-echo #'ebox--hover-help string))
+        (setq pos next)))))
 
 (setq ebox--decorate-function #'ebox--decorate-interactive)
 
@@ -1904,6 +1982,8 @@ already ended, for example after its buffer was unmounted, returns nil."
 
 (defvar-local ebox--pointer-hover-node nil
   "Node whose :hover-style paints under the pointer in this buffer.")
+(defvar-local ebox--pointer-help nil
+  "Effective help the pointer last reported in this buffer, or nil.")
 (defvar ebox--pointer-hover-buffer nil
   "Mounted buffer currently owning pointer hover paint.")
 
@@ -1943,37 +2023,126 @@ cannot repaint and keeps no allocated paint."
         (setq node (ebox-node-parent node)))
       node)))
 
+(defconst ebox-hover-guard-interval 0.1
+  "Seconds between pointer checks while feedback is painted.")
+
+(defvar-local ebox--hover-guard-timer nil
+  "Timer that keeps pointer feedback valid while it paints in this buffer.")
+
+(defun ebox--pointer-buffer-position (window)
+  "Return WINDOW's buffer position under the mouse pointer, or nil.
+Window chrome, another window, another frame or an unknown pointer reports
+nil."
+  (let ((mouse (mouse-position)))
+    (when (and (eq (car mouse) (window-frame window))
+               (cdr mouse))
+      (let ((absolute (mouse-absolute-pixel-position))
+            (edges (window-absolute-pixel-edges window)))
+        (when absolute
+          (let ((posn (posn-at-x-y (- (car absolute) (nth 0 edges))
+                                   (- (cdr absolute) (nth 1 edges))
+                                   window t)))
+            (when (and (eq (posn-window posn) window)
+                       (null (posn-area posn))
+                       (integer-or-marker-p (posn-point posn)))
+              (posn-point posn))))))))
+
+(defun ebox--pointer-enter (window position)
+  "Adopt pointer hover at POSITION in WINDOW.
+The painted help-echo probe calls this on pointer movement, which needs no
+`track-mouse'.  A guard timer follows the pointer until no feedback remains,
+so leaving the buffer never turns motion over other windows into input here."
+  (when (and (window-live-p window)
+             (eq (window-buffer window) (current-buffer))
+             (integer-or-marker-p position)
+             (bound-and-true-p ebox-buffer-mode)
+             (ebox-buffer-mount))
+    (ebox--update-pointer-hover position nil)
+    (unless (timerp ebox--hover-guard-timer)
+      (setq ebox--hover-guard-timer
+            (run-at-time ebox-hover-guard-interval nil
+                         #'ebox--hover-guard (current-buffer))))))
+
+(defun ebox--hover-guard (buffer)
+  "Follow the pointer while BUFFER paints pointer feedback.
+Refresh the pointed node while the pointer is over BUFFER, and release the
+paint once it is not.  Stop when nothing is painted."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (if (not (and (bound-and-true-p ebox-buffer-mode)
+                    (ebox-buffer-mount)
+                    (or ebox--pointer-hover-node
+                        (ebox-mount-hover ebox--buffer-mount))))
+          (setq ebox--hover-guard-timer nil)
+        (let* ((mouse (mouse-position))
+               (frame (car mouse))
+               (at (and (cdr mouse)
+                        (window-at (cadr mouse) (cddr mouse) frame)))
+               (position (and (windowp at)
+                              (eq frame (window-frame at))
+                              (eq (window-buffer at) buffer)
+                              (ebox--pointer-buffer-position at))))
+          (if position
+              (progn
+                (ebox--update-pointer-hover position nil)
+                (setq ebox--hover-guard-timer
+                      (run-at-time ebox-hover-guard-interval nil
+                                   #'ebox--hover-guard buffer)))
+            (ebox--pointer-leave)))))))
+
+(defun ebox--update-pointer-hover (position area)
+  "Paint pointer feedback for POSITION in the current buffer.
+AREA non-nil means POSITION is window chrome rather than text, so feedback
+clears."
+  (let ((inside (null area)))
+    (ebox--paint-pointer-hover
+     (and inside (ebox--pointer-hover-owner position)))
+    (when ebox--buffer-mount
+      (let* ((owner (and inside (integer-or-marker-p position)
+                         (ebox--hover-owner position)))
+             (group (and owner (ebox--hover-group owner))))
+        (unless (equal group (ebox-mount-hover ebox--buffer-mount))
+          (when (ebox-mount-hover ebox--buffer-mount)
+            (ebox--hover-restore ebox--buffer-mount))
+          (when group
+            (ebox--hover-activate ebox--buffer-mount group)))))))
+
+(defun ebox--pointer-leave ()
+  "Release pointer feedback in the current buffer and stop tracking.
+Keyboard focus keeps showing its own `:hover-content'."
+  (ebox--clear-pointer-hover)
+  (when-let* ((mount ebox--buffer-mount))
+    (when (ebox-mount-hover mount)
+      (ebox--hover-restore mount)
+      (ebox--focus-hover mount (ebox-mount-focus mount))))
+  (setq-local ebox--pointer-help nil)
+  (when (timerp ebox--hover-guard-timer)
+    (cancel-timer ebox--hover-guard-timer))
+  (setq ebox--hover-guard-timer nil)
+  (kill-local-variable 'track-mouse))
+
 (defun ebox--hover-event (event)
-  "Update hover content and complete painted regions for mouse-movement EVENT."
+  "Update pointer feedback for mouse-movement EVENT.
+The event window decides: motion inside this mounted buffer paints the pointed
+node, and motion anywhere else releases the feedback.  A painted help-echo
+probe reports entry, and the pointer guard refreshes or releases the paint
+while it is active."
   (interactive "e")
   (clear-this-command-keys)
   (let* ((position (event-end event))
          (window (and (consp position) (posn-window position)))
          (point (and (consp position) (posn-point position)))
+         (area (and (consp position) (posn-area position)))
          (buffer (and (window-live-p window) (window-buffer window)))
          (mount (and buffer (ebox-buffer-mount buffer))))
     (when (and (buffer-live-p ebox--pointer-hover-buffer)
                (not (eq buffer ebox--pointer-hover-buffer)))
-      (with-current-buffer ebox--pointer-hover-buffer (ebox--clear-pointer-hover)))
-    (when mount
-      (with-current-buffer buffer
-        (ebox--paint-pointer-hover
-         (and (null (posn-area position)) (ebox--pointer-hover-owner point)))))
-    (when (and mount (null (posn-area position)))
-      (with-current-buffer buffer
-        (let* ((owner (and (integer-or-marker-p point) (ebox--hover-owner point)))
-               (group (and owner (ebox--hover-group owner))))
-          (unless (equal group (ebox-mount-hover mount))
-            (when (ebox-mount-hover mount) (ebox--hover-restore mount))
-            (when group (ebox--hover-activate mount group))))))
-    nil))
-
-(defun ebox--hover-sync (buffer)
-  "Enable local mouse tracking in BUFFER once it paints hover content."
-  (with-current-buffer buffer
-    (let ((mount ebox--buffer-mount))
-      (when (and mount (ebox-mount-hover-p mount) (not (local-variable-p 'track-mouse)))
-        (setq-local track-mouse t)))))
+      (with-current-buffer ebox--pointer-hover-buffer
+        (ebox--pointer-leave)))
+    (if (and mount (eq buffer (current-buffer)))
+        (with-current-buffer buffer
+          (ebox--update-pointer-hover point area))
+      (ebox--pointer-leave))))
 
 ;;;; Scrolling
 
@@ -2291,23 +2460,26 @@ The canvas has no text selection; an input session keeps its own region."
                       (bound-and-true-p show-paren-mode))))
         (setq-local show-paren-mode nil)
         (add-hook 'activate-mark-hook #'ebox--refuse-mark nil t)
-        (add-hook 'mouse-leave-buffer-hook #'ebox--clear-pointer-hover nil t)
+        (add-hook 'mouse-leave-buffer-hook #'ebox--pointer-leave nil t)
         (add-hook 'kill-buffer-hook #'ebox--clear-pointer-hover nil t)
         (setq-local minor-mode-overriding-map-alist
                     (append (mapcar (lambda (mode) (cons mode ebox-buffer-mode-map))
                                     ebox--scroll-overridden-modes)
                             (cl-remove-if (lambda (entry)
                                             (memq (car entry) ebox--scroll-overridden-modes))
-                                          minor-mode-overriding-map-alist)))
-        (ebox--hover-sync (current-buffer)))
+                                          minor-mode-overriding-map-alist))))
     (setq-local minor-mode-overriding-map-alist
                 (cl-remove-if (lambda (entry)
                                 (memq (car entry) ebox--scroll-overridden-modes))
                               minor-mode-overriding-map-alist))
     (remove-hook 'activate-mark-hook #'ebox--refuse-mark t)
-    (remove-hook 'mouse-leave-buffer-hook #'ebox--clear-pointer-hover t)
+    (remove-hook 'mouse-leave-buffer-hook #'ebox--pointer-leave t)
     (remove-hook 'kill-buffer-hook #'ebox--clear-pointer-hover t)
     (ebox--clear-pointer-hover)
+    (when (timerp ebox--hover-guard-timer)
+      (cancel-timer ebox--hover-guard-timer))
+    (setq ebox--hover-guard-timer nil)
+    (kill-local-variable 'ebox--pointer-help)
     (when ebox--saved-overline-margin
       (if (car ebox--saved-overline-margin)
           (setq-local overline-margin (cdr ebox--saved-overline-margin))
@@ -2319,14 +2491,6 @@ The canvas has no text selection; an input session keeps its own region."
         (kill-local-variable 'show-paren-mode))
       (setq ebox--saved-show-paren nil))
     (kill-local-variable 'track-mouse)))
-
-(defun ebox--after-flush-hover (buffer)
-  "Enable BUFFER's mouse tracking once it paints hover feedback."
-  (when (buffer-local-value 'ebox-buffer-mode buffer)
-    (unless (local-variable-p 'track-mouse buffer)
-      (ebox--hover-sync buffer))))
-
-(add-hook 'ebox-after-flush-functions #'ebox--after-flush-hover)
 
 ;;;; Selector queries
 

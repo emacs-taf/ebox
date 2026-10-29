@@ -170,6 +170,13 @@ display。Emacs 会合并相邻且 `display` 对象 `eq` 的字符，因此 `ebo
 交互 decoration 在 composition 中发生。Ebox 填充未设置的 `ebox-node`、`keymap`、`help-echo`、`pointer` 和
 `mouse-face` property，使最内层显式节点胜出，ancestor keymap 覆盖未 override 的 descendant。
 节点拥有自己的装饰缓存，使 hover face 在多行之间保持同一对象。原生 mouse face 先取节点计算出的 face，再叠加 hover 声明：显示时 `mouse-face` 会**替代**文本的 `face`，所以只声明填充色的 hover 样式仍保留标签的墨色、字重与装饰，不会回落到 frame 默认前景。
+
+hover 反馈需要知道指针位置，但 buffer 常驻 `track-mouse` 会把整个 frame 的移动都变成输入，
+包括移到别的窗口上的移动；命令循环随后会带着这个 buffer 执行那个窗口的 `mouse-movement` 绑定。
+Ebox 因此在每个 hover 目标上画一个 `help-echo` 探针：Emacs 不需要 `track-mouse` 就会在指针移动时调用它，
+它绘制进入状态并启动一个短的指针守卫。守卫只在仍有反馈可画时跟着指针，指针离开后恢复原状，
+再次进入仍由同一个探针接手。每段的原始帮助保存在 `ebox-help-echo` 中并由探针返回，
+echo area 与 tooltip 的输出因此不变。
 所有状态 face 都遵循这条规则：状态样式只声明它要改的属性，原生 face 复述节点自己的墨色、
 字重、斜体与装饰；静止 face 是共享并 intern 的对象，状态 face 先复制再叠加覆盖。样式变化
 因此会清掉装饰缓存并重建 face，而不是保留上一次的颜色。
