@@ -6,6 +6,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- A canvas no taller than its window stays at its first line after a rewrite:
+  the window start is no longer restored to a line the rewritten content no
+  longer reaches, so a panel that shrank does not leave its window blank.
 - A wheel turn that no scroll region consumes no longer scrolls the window
   of a mounted tree that already fits: the fallback measures the painted tree
   instead of asking whether `point-max` is visible, so a canvas stays pinned
