@@ -690,20 +690,28 @@ before LINE would otherwise leave on the inserted text."
     (or result (cons (+ line delta) nil))))
 
 (defun ebox--restore-positions (mount tracked edits)
-  "Restore TRACKED positions of MOUNT after EDITS."
+  "Restore TRACKED positions of MOUNT after EDITS.
+A canvas no taller than its window has nothing to scroll, so its window
+starts at the first line: restoring a line that the rewrite moved there
+would leave the window showing the blank tail of a short canvas."
   (let ((last (max 0 (1- (ebox-mount-lines mount)))))
     (dolist (entry tracked)
       (pcase-let* ((`(,kind ,window ,line ,column) entry)
                    (new-line (min last (car (ebox--map-line line edits))))
                    (pos (save-excursion
                           (ebox--goto-line mount new-line)
-                          (min (+ (point) column) (line-end-position)))))
+                          (min (+ (point) column) (line-end-position))))
+                   (fits (and (window-live-p window)
+                              (<= (ebox-mount-lines mount)
+                                  (window-body-height window)))))
         (pcase kind
           ('buffer (goto-char pos))
           ('point (when (and (window-live-p window) (/= pos (window-point window)))
                     (set-window-point window pos)))
-          ('start (when (and (window-live-p window) (/= pos (window-start window)))
-                    (set-window-start window pos t))))))))
+          ('start (when (window-live-p window)
+                    (let ((start (if fits (point-min) pos)))
+                      (unless (= start (window-start window))
+                        (set-window-start window start t))))))))))
 
 (defun ebox--rewrite-span (line eol &optional old)
   "Make the span from point to EOL read LINE, a string, and end there.
