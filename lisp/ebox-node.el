@@ -33,7 +33,7 @@
 
 (defconst ebox--meta-properties
   '(:key :class :id :attributes :states :ecss :ecss-file :ecss-scopes
-    :ecss-scope-roots :defaults :data :image)
+    :ecss-scope-roots :defaults :data :image :source)
   "Node facts that are neither style nor interaction properties.")
 
 ;;;; Node
