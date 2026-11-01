@@ -2076,7 +2076,13 @@ paint once it is not.  Stop when nothing is painted."
           (setq ebox--hover-guard-timer nil)
         (let* ((mouse (mouse-position))
                (frame (car mouse))
+               ;; The pointer can sit outside the frame — on another display, a
+               ;; menu bar, or past the edge — where its cell coordinates are
+               ;; negative.  `window-at' signals on those, so treat them as "not
+               ;; over this buffer" instead.
                (at (and (cdr mouse)
+                        (wholenump (cadr mouse))
+                        (wholenump (cddr mouse))
                         (window-at (cadr mouse) (cddr mouse) frame)))
                (position (and (windowp at)
                               (eq frame (window-frame at))
