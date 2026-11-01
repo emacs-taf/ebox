@@ -2902,8 +2902,26 @@ decorations are applied afterwards, so they continue across overlays."
   (ebox--node-line root i))
 
 (defun ebox--root-parts (root i)
-  "Return the strings that line I of ROOT writes to a buffer, in order."
-  (ebox--join-parts (ebox--node-parts root i)))
+  "Return the strings that line I of ROOT writes to a buffer, in order.
+The row ends with its strut, which keeps it one line high when its glyphs are
+shorter than the line."
+  (let ((parts (ebox--join-parts (ebox--node-parts root i))))
+    (if-let* ((strut (ebox--row-strut))
+              (last (car (last parts))))
+        (append parts (list (ebox--row-strut-part strut last)))
+      parts)))
+
+(defun ebox--row-strut-part (strut last)
+  "Return STRUT carrying the properties of LAST's final cell.
+The strut completes a row without paint of its own, so line-end background,
+hover and hit testing keep belonging to that cell."
+  (let ((part (substring strut 0))
+        (props (text-properties-at (1- (length last)) last)))
+    (while props
+      (unless (eq (car props) 'display)
+        (put-text-property 0 (length part) (car props) (cadr props) part))
+      (setq props (cddr props)))
+    part))
 
 (defun ebox--node-lines (node from to)
   "Return NODE's margin-box lines FROM (inclusive) TO (exclusive)."

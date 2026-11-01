@@ -135,9 +135,12 @@ layout 会跳过。
 位置快照也包含 layout 是否存在及 overlay 是否已放置：摘下的节点可以保留数值尺寸，重新接入相同坐标仍是新绘制。
 
 文本测量按 text node、font face 与 wrap mode 缓存。paragraph layout 将文本拆成 pixel-width units，保留受支持
-cluster 与 fixed display space。图形 frame 上，若某 cluster 的回退字体高于其 face 的行高（彩色 emoji、符号、数学字母，或字体 ascent/descent 超过默认字体的任何文字，每个字符只判定一次），
-则以能让该行保持一行高度的最大 `height` 缩放测量并绘制；判断时与普通字符同处一行，因为行高取最大 ascent 加最大
-descent。这样每行都保持纵向网格与图像切片所依赖的行高。不使用 SVG 渲染 emoji：librsvg 的 Pango 后端遇到某些
+cluster 与 fixed display space。face 的行高取正文所用字体中最大的 ascent 加 descent，每帧用拉丁与中日韩字符
+各探测一次，所以中文回退字体的行框更高时整行跟着变高，不会把中文缩进去。发布出来的每行末尾有一个零宽、正好
+一行高的空格，把只含较矮字形的行也垫到行高；它带着最后一格的文字属性，行尾绘制、hover 与命中判定仍归那一格。
+图形 frame 上，若某 cluster 的回退字体高于其 face 的行高（彩色 emoji、符号、数学字母，或字体 ascent/descent 超
+过默认字体的任何文字，每个字符只判定一次），则以能让该行保持一行高度的最大 `height` 缩放测量并绘制；判断时与
+普通字符同处一行，因为行高取最大 ascent 加最大 descent。这样每行都保持纵向网格与图像切片所依赖的行高。不使用 SVG 渲染 emoji：librsvg 的 Pango 后端遇到某些
 emoji 会使 Emacs 中止。box 在横向解析为像素、纵向解析为行。row 与 column 沿一个轴定位直接子节点。
 flex 使用 min/max freezing、wrapping 与 alignment 做 main-size grow/shrink。grid 展开 track、解析 fixed/intrinsic/
 fractional size，并按一基 grid position 放置 item。

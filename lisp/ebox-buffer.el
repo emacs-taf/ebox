@@ -1092,7 +1092,7 @@ are measured under the current buffer's faces, so its text scale applies."
     (ebox--layout root ebox--vw (if (eq (ebox-node-tag root) 'text) 'shrink 'stretch) ebox--vh)
     (ebox--place-anchored root (ebox--collect-anchored root))
     (ebox--carry-string-mouse-face
-     (mapconcat (lambda (i) (ebox--root-line root i))
+     (mapconcat (lambda (i) (apply #'concat (ebox--root-parts root i)))
                 (number-sequence 0 (1- (ebox-node-h root))) "\n"))))
 
 (defun ebox-viewport-window-width (window)

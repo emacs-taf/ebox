@@ -13,6 +13,14 @@ This is the oracle for Ebox measurement on every supported Emacs version."
       (insert string)
       (car (buffer-text-pixel-size nil nil t)))))
 
+(defun ebox-test-native-height (string buffer)
+  "Return STRING's one-row height measured with BUFFER's face remapping."
+  (let ((remap (buffer-local-value 'face-remapping-alist buffer)))
+    (with-temp-buffer
+      (setq-local face-remapping-alist remap)
+      (insert string)
+      (cdr (buffer-text-pixel-size nil nil t)))))
+
 (defmacro ebox-test-with-mounted (spec &rest body)
   "Mount SPEC's input in a new buffer, bind its root, run BODY, then clean up.
 SPEC has the form (BUFFER ROOT INPUT &rest OPTIONS)."

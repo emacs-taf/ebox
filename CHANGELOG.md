@@ -6,6 +6,13 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Chinese and other CJK text keeps its own font size.  A row's line height was
+taken from the Latin font alone, so a CJK font with a taller line box was
+treated as a fallback glyph and scaled down to 0.8 of its size, which also
+made its line breaks too tight.  The line now covers the body fonts of the
+face, Latin and CJK, and every published row is one line high, so a taller
+CJK font raises the rows instead of shrinking its glyphs.
+
 - Pointer hover no longer sets `track-mouse' in a mounted buffer.  A painted
   `help-echo' probe paints entry and a short guard follows the pointer until
   no feedback remains, so motion over another window never runs a command

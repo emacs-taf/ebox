@@ -86,6 +86,31 @@ frame when hidden.  Text displays return unit cells and 100 percent ascent.
 An unknown buffer signals `error'."
   (copy-sequence (ebox--display-metrics buffer-or-name)))
 
+(defconst ebox--line-probes "0汉"
+  "Characters whose fonts set a row's height: Latin and CJK body text.
+A font that reaches further than the Latin one for text the reader reads as
+prose raises the line.  Fonts for decoration and rarer scripts stay out;
+their glyphs are fitted into the line instead.")
+
+(defun ebox--line-box (face frame)
+  "Return (HEIGHT . ASCENT) of the tallest of `ebox--line-probes' under FACE.
+A row takes the largest ascent plus the largest descent of the glyphs in it,
+so body text in a taller font sizes the line rather than shrinking its glyphs
+into a line set by another script."
+  (with-temp-buffer
+    (let ((height 0) (ascent 0) (descent 0))
+      (dolist (char (string-to-list ebox--line-probes))
+        ;; A string probe inherits the window's base font.  Apply the remap
+        ;; exactly once.
+        (let ((info (font-info (font-at 0 nil
+                                       (propertize (char-to-string char) 'face face))
+                               frame)))
+          (when info
+            (setq height (max height (aref info 3))
+                  ascent (max ascent (aref info 8))
+                  descent (max descent (aref info 9))))))
+      (cons (max 1 height (+ ascent descent)) ascent))))
+
 (defun ebox--display-metrics (&optional buffer-or-name)
   "Read BUFFER-OR-NAME's cached metrics without allocating on a cache hit.
 The returned plist belongs to the measuring layer and must not be changed."
@@ -112,13 +137,9 @@ The returned plist belongs to the measuring layer and must not be changed."
                                       'default))
                             (buffer (current-buffer)))
                         (with-selected-window window
-                          (let* ((info (with-temp-buffer
-                                         ;; A string probe inherits the window's
-                                         ;; base font.  Apply the remap exactly once.
-                                         (font-info (font-at 0 nil
-                                                     (propertize "0" 'face face)) frame)))
-                                 (height (max 1 (aref info 3)))
-                                 (ascent (aref info 8)))
+                          (let* ((box (ebox--line-box face frame))
+                                 (height (car box))
+                                 (ascent (cdr box)))
                             (list :char-width (max 1 (ebox--buffer-string-pixel-width
                                                       "0" buffer))
                                   :line-height height
@@ -473,6 +494,15 @@ A glyph that no scale fits takes the last.")
       (insert string)
       (buffer-text-pixel-size nil nil t))))
 
+(defun ebox--face-text-height (face)
+  "Return the pixel height of ordinary text under FACE."
+  (let ((hash (cdr (ebox--face-table face))))
+    (or (gethash 'text-height hash)
+        (puthash 'text-height
+                 (cdr (ebox--measure-raw-size
+                       (if face (propertize "0" 'face face) "0")))
+                 hash))))
+
 (defun ebox--face-line-height (face)
   "Return the pixel height of a line of ordinary text under FACE."
   (let ((hash (cdr (ebox--face-table face))))
@@ -480,9 +510,31 @@ A glyph that no scale fits takes the last.")
         (puthash 'line-height
                  (max (plist-get (or ebox--active-metrics
                                     (ebox--display-metrics ebox--measure-buffer)) :line-height)
-                      (cdr (ebox--measure-raw-size
-                            (if face (propertize "0" 'face face) "0"))))
+                      (ebox--face-text-height face))
                  hash))))
+
+(defvar ebox--row-strut-cache nil
+  "Cons of a row-metric key and the row strut built from it.")
+
+(defun ebox--row-strut ()
+  "Return the shared string that fills a published row to one line height.
+Its zero-width space is exactly the line high and places the baseline where
+images align, so a row holding only shorter glyphs still measures one line.
+Return nil when ordinary text already reaches the line."
+  (let* ((metrics (or ebox--active-metrics
+                      (ebox--display-metrics ebox--measure-buffer)))
+         (line (plist-get metrics :line-height))
+         (ascent (plist-get metrics :ascent))
+         (text (ebox--face-text-height nil))
+         (key (list line ascent text ebox--width-epoch)))
+    (unless (equal key (car ebox--row-strut-cache))
+      (setq ebox--row-strut-cache
+            (cons key (and (> line text)
+                           (propertize "\u200b"
+                                       'display (list 'space :width '(0)
+                                                      :height (list line)
+                                                      :ascent ascent))))))
+    (cdr ebox--row-strut-cache)))
 
 (defun ebox--fit-row-height (cluster face scale)
   "Return the height of a row holding CLUSTER at SCALE beside text under FACE."

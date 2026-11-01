@@ -923,6 +923,11 @@
       "name": "ebox-image-canvas-preparation-distinguishes-ids",
       "file": "tests/ebox-image-file-tests.el",
       "purpose": "Two canvases with different ids stay distinct preparations."
+    },
+    {
+      "name": "ebox-body-text-rows-keep-the-line-height",
+      "file": "tests/ebox-line-height-tests.el",
+      "purpose": "Every published row measures one line height, so a CJK body font taller than the Latin one raises the line instead of shrinking Chinese text to fit it."
     }
   ]
 }

@@ -171,12 +171,19 @@ size, but reattaching it at those coordinates still introduces new paint.
 
 Text measurement is cached per text node, font face and wrap mode.  Paragraph
 layout breaks text into pixel-width units, preserving supported clusters and
-fixed display spaces.  On graphical frames a cluster whose fallback font is
-taller than its face's line (colour emoji, symbols, mathematical letters or
-any script whose font ascent or descent exceeds the default font's, checked
-once per character) is measured and painted at the largest `height` scale that keeps the row at one line, judged
-beside an ordinary character because a row takes the largest ascent plus the
-largest descent.  Rows therefore keep the line height the vertical grid and
+fixed display spaces.  A face's line is as tall as the largest ascent plus the
+largest descent among the fonts that carry body text, probed once per frame
+with Latin and CJK characters, so a CJK font whose box reaches beyond the
+Latin one raises every row instead of shrinking Chinese text into it.  A
+published row ends with a zero-width space exactly one line high, which holds
+a row of shorter glyphs at that height; it carries the last cell's properties,
+so line-end paint, hover and hit testing stay with that cell.  On graphical
+frames a cluster whose fallback font is taller than its face's line (colour
+emoji, symbols, mathematical letters or any script whose font ascent or
+descent exceeds the default font's, checked once per character) is measured
+and painted at the largest `height` scale that keeps the row at one line,
+judged beside an ordinary character because a row takes the largest ascent
+plus the largest descent.  Rows therefore keep the line height the vertical grid and
 image slices rely on.  SVG-rendered emoji are avoided: librsvg's Pango backend
 aborts Emacs on some emoji.  Boxes resolve horizontal sizes in pixels and vertical
 sizes in lines.  Row and column position direct children on one axis.  Flex

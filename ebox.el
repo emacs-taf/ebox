@@ -92,7 +92,8 @@
 ;;;###autoload (autoload 'ebox-display-metrics "ebox" nil nil)
 ;; Return a fresh plist describing BUFFER-OR-NAME's effective default face.
 ;; Default to the current buffer.  :char-width and :line-height are positive
-;; pixel sizes; :ascent is the percentage aligning images to its baseline.
+;; pixel sizes; :line-height is one row, sized by the face's body fonts;
+;; :ascent is the percentage aligning images to its baseline.
 ;; Buffer-local text scaling is included.  Use its displaying frame, or the
 ;; selected frame for hidden buffers.  Text displays use unit cells and 100
 ;; percent ascent.  An unknown buffer signals `error'.  Image producers use
