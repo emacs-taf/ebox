@@ -2989,11 +2989,16 @@ means the damage is not shown."
   (let ((node (ebox--damage-owner (car damage))))
     (and (ebox-node-layout node) (eq (ebox-node-root node) root))))
 
-(defun ebox--root-edits (root damages)
+(defun ebox--root-edits (root damages &optional old-lines)
   "Convert DAMAGES under ROOT to sorted, merged (START OLD NEW) edits.
 START is in post-layout lines; applying edits in order transforms the old
-lines into the new ones.  Return the symbol `full' when ranges overlap in a
-way that cannot be expressed as ordered line replacements."
+lines into the new ones.  OLD-LINES is the line count the buffer holds now,
+which the edits must turn into ROOT's own height.  Return the symbol `full'
+when ranges overlap in a way that cannot be expressed as ordered line
+replacements, or when the reported damages do not account for every line the
+new layout has: a page written from an edit list that does not add up keeps
+rows the layout no longer has, and the buffer would then disagree with what
+the next pass believes it painted."
   (let ((height (ebox-node-h root))
         ranges merged)
     (dolist (damage damages)
@@ -3033,7 +3038,12 @@ way that cannot be expressed as ordered line replacements."
            (t (throw 'full 'full)))))
       (dolist (edit merged)
         (setcdr (nthcdr 2 edit) nil))
-      (nreverse merged))))
+      (let ((growth 0))
+        (dolist (edit merged)
+          (setq growth (+ growth (- (nth 2 edit) (nth 1 edit)))))
+        (if (and old-lines (/= (+ old-lines growth) height))
+            'full
+          (nreverse merged))))))
 
 (provide 'ebox-layout)
 

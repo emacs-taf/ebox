@@ -1013,8 +1013,10 @@ every row an interactive element spans."
       (setq ebox--damage (ebox--damage-prune ebox--damage))
       (dolist (damage ebox--damage)
         (ebox--uncache (ebox--damage-owner (car damage))))
-      (let ((edits (if fresh 'full (ebox--root-edits root ebox--damage)))
-            (old-lines (ebox-mount-lines mount)))
+      (let ((old-lines (ebox-mount-lines mount))
+            (edits (if fresh 'full
+                     (ebox--root-edits root ebox--damage
+                                       (ebox-mount-lines mount)))))
         (cond
          ((eq edits 'full) (ebox--paint-all mount))
          (edits (ebox--apply-edits mount edits)))
