@@ -95,8 +95,17 @@ body than last delivered is not a change."
                   ;; the minibuffer, a completion popup or the echo area is
                   ;; showing keeps the mounted viewport; a frame change or
                   ;; height growth is real geometry.
-                  (unless (and borrowed (< height (or (ebox-mount-vh mount) -1)))
-                    (ebox-refit buffer))
+                  ;;
+                  ;; The echo area shows one or two lines, so only that much can
+                  ;; be borrowed.  Treating any message as borrowed kept a page
+                  ;; mounted in a small window at that size forever: the user
+                  ;; resized the frame, the height was larger, the mount still
+                  ;; reported the old rows and the page drew a small block in a
+                  ;; big window.  A larger drop is a resize, message or not.
+                  (let ((drop (- (or (ebox-mount-vh mount) 0) height)))
+                    (unless (and borrowed (< height (or (ebox-mount-vh mount) -1))
+                                 (<= drop 3))
+                      (ebox-refit buffer)))
                   (when (buffer-live-p buffer)
                     (ebox--display-window-notify buffer display-window borrowed))))))))
       (when frame-size

@@ -2039,13 +2039,17 @@ nil."
       (let ((absolute (mouse-absolute-pixel-position))
             (edges (window-absolute-pixel-edges window)))
         (when absolute
-          (let ((posn (posn-at-x-y (- (car absolute) (nth 0 edges))
-                                   (- (cdr absolute) (nth 1 edges))
-                                   window t)))
-            (when (and (eq (posn-window posn) window)
-                       (null (posn-area posn))
-                       (integer-or-marker-p (posn-point posn)))
-              (posn-point posn))))))))
+          ;; The pointer can be beside or above the window — on the mode line,
+          ;; a header line, another window — and those offsets are negative.
+          ;; `posn-at-x-y' signals on them, so report no position instead.
+          (let ((x (- (car absolute) (nth 0 edges)))
+                (y (- (cdr absolute) (nth 1 edges))))
+            (when (and (wholenump x) (wholenump y))
+              (let ((posn (posn-at-x-y x y window t)))
+                (when (and (eq (posn-window posn) window)
+                           (null (posn-area posn))
+                           (integer-or-marker-p (posn-point posn)))
+                  (posn-point posn))))))))))
 
 (defun ebox--pointer-enter (window position)
   "Adopt pointer hover at POSITION in WINDOW.
