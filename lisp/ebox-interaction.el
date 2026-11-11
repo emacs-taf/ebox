@@ -2032,24 +2032,28 @@ cannot repaint and keeps no allocated paint."
 (defun ebox--pointer-buffer-position (window)
   "Return WINDOW's buffer position under the mouse pointer, or nil.
 Window chrome, another window, another frame or an unknown pointer reports
-nil."
-  (let ((mouse (mouse-position)))
-    (when (and (eq (car mouse) (window-frame window))
-               (cdr mouse))
-      (let ((absolute (mouse-absolute-pixel-position))
-            (edges (window-absolute-pixel-edges window)))
-        (when absolute
-          ;; The pointer can be beside or above the window — on the mode line,
-          ;; a header line, another window — and those offsets are negative.
-          ;; `posn-at-x-y' signals on them, so report no position instead.
-          (let ((x (- (car absolute) (nth 0 edges)))
-                (y (- (cdr absolute) (nth 1 edges))))
-            (when (and (wholenump x) (wholenump y))
-              (let ((posn (posn-at-x-y x y window t)))
-                (when (and (eq (posn-window posn) window)
-                           (null (posn-area posn))
-                           (integer-or-marker-p (posn-point posn)))
-                  (posn-point posn))))))))))
+nil.  The pointer is resolved inside its own frame: `mouse-pixel-position'
+and `window-pixel-edges' share the frame's origin.  A child frame can be
+placed relative to its parent while its reported absolute edges omit that
+origin, so measuring the display-absolute pointer against those edges would
+hit-test the rows below the pointer instead of the row under it."
+  (let* ((mouse (mouse-pixel-position))
+         (frame (car-safe mouse))
+         (x (car-safe (cdr-safe mouse)))
+         (y (cdr-safe (cdr-safe mouse))))
+    (when (and (eq frame (window-frame window)) (numberp x) (numberp y))
+      (let* ((edges (window-pixel-edges window))
+             (left (- x (nth 0 edges)))
+             (top (- y (nth 1 edges))))
+        ;; The pointer can be beside or above the window — on the mode line,
+        ;; a header line, another window — and those offsets are negative.
+        ;; `posn-at-x-y' signals on them, so report no position instead.
+        (when (and (>= left 0) (>= top 0))
+          (let ((posn (posn-at-x-y left top window t)))
+            (when (and (eq (posn-window posn) window)
+                       (null (posn-area posn))
+                       (integer-or-marker-p (posn-point posn)))
+              (posn-point posn))))))))
 
 (defun ebox--pointer-enter (window position)
   "Adopt pointer hover at POSITION in WINDOW.

@@ -251,10 +251,15 @@ over another window; the command loop then runs that window's
 `mouse-movement' binding with the mounted buffer current.  Ebox therefore
 paints a `help-echo' probe on each hover target: Emacs calls it on pointer
 movement without `track-mouse', and it paints entry and starts a short guard.
-The guard follows the pointer only while feedback is painted and restores it
-once the pointer is elsewhere, so re-entry goes through the same probe.  Each
-run's original help stays in `ebox-help-echo' and the probe returns it, keeping
-echo-area and tooltip output unchanged.
+The guard resolves the pointer inside the frame that owns the window —
+`mouse-pixel-position' less `window-pixel-edges', both frame-relative — rather
+than against the window's absolute edges: a child frame can be placed relative
+to its parent while its reported absolute edges omit that origin, so mixing
+the two spaces hit-tests the rows below the pointer instead of the row under
+it.  The guard follows the pointer only while feedback is painted and restores
+it once the pointer is elsewhere, so re-entry goes through the same probe.
+Each run's original help stays in `ebox-help-echo' and the probe returns it,
+keeping echo-area and tooltip output unchanged.
 
 Every state face follows that rule: the state style declares only the
 properties it changes, and the native face restates the node's own ink, weight,

@@ -539,6 +539,44 @@ resolved in another buffer releases the paint without enabling `track-mouse'."
         (should-not (equal (get-char-property position 'face)
                            '(:background "#123456")))))))
 
+(ert-deftest ebox-pointer-guard-reads-the-pointer-inside-its-frame ()
+  "The pointer guard hit-tests the pointer inside the window's own frame.
+A child frame can be placed relative to its parent while its reported absolute
+edges omit that origin, so a display-absolute pointer would follow the rows
+below the pointer instead of the row under it."
+  (ebox-test-with-mounted (buffer root '(column (box :id "target"
+                                                    :hover-style (:background-color "#123456")
+                                                    "target")
+                                               (text "after")))
+    (save-window-excursion
+      (switch-to-buffer buffer)
+      (let* ((window (selected-window))
+             (position (ebox-node-position (car (ebox-selector-query root "#target"))))
+             (hit nil))
+        ;; The painted probe paints the target and starts the pointer guard.
+        (funcall (get-text-property position 'help-echo) window buffer position)
+        (should (equal (get-char-property position 'face) '(:background "#123456")))
+        (cl-letf (((symbol-function 'mouse-position)
+                   (lambda () (cons (window-frame window) (cons 0 0))))
+                  ((symbol-function 'window-at)
+                   (lambda (&rest _arguments) window))
+                  ;; The pointer rests 140 by 260 inside its frame.
+                  ((symbol-function 'mouse-pixel-position)
+                   (lambda () (cons (window-frame window) (cons 140 260))))
+                  ;; The window starts 20 pixels below the frame's origin.
+                  ((symbol-function 'window-pixel-edges)
+                   (lambda (&optional _window) '(0 20 800 600)))
+                  ((symbol-function 'window-absolute-pixel-edges)
+                   (lambda (&optional _window) '(300 300 1100 900)))
+                  ((symbol-function 'mouse-absolute-pixel-position)
+                   (lambda () (cons 440 560)))
+                  ((symbol-function 'posn-at-x-y)
+                   (lambda (x y &optional _window _whole)
+                     (setq hit (cons x y))
+                     nil)))
+          (sit-for 0.25))
+        (should (equal hit '(140 . 240)))))))
+
 (ert-deftest ebox-hover-content-follows-pointer-entry-and-leave ()
   "The help probe shows hover content on entry; leaving restores the text."
   (ebox-test-with-mounted (buffer root '(box :id "row" :hover-content "Play" "Song"))

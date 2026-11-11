@@ -6,6 +6,13 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Pointer hover follows the pointer inside its own frame.  The guard measured
+the display-absolute pointer against the window's reported absolute edges, but
+a child frame can be placed relative to its parent while those edges omit that
+origin; a mounted panel therefore highlighted the rows below the pointer
+(three rows in a typical panel) and flickered between them and the pointed row
+while the pointer moved.
+
 - Chinese and other CJK text keeps its own font size.  A row's line height was
 taken from the Latin font alone, so a CJK font with a taller line box was
 treated as a fallback glyph and scaled down to 0.8 of its size, which also

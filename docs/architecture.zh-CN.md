@@ -178,7 +178,10 @@ display。Emacs 会合并相邻且 `display` 对象 `eq` 的字符，因此 `ebo
 hover 反馈需要知道指针位置，但 buffer 常驻 `track-mouse` 会把整个 frame 的移动都变成输入，
 包括移到别的窗口上的移动；命令循环随后会带着这个 buffer 执行那个窗口的 `mouse-movement` 绑定。
 Ebox 因此在每个 hover 目标上画一个 `help-echo` 探针：Emacs 不需要 `track-mouse` 就会在指针移动时调用它，
-它绘制进入状态并启动一个短的指针守卫。守卫只在仍有反馈可画时跟着指针，指针离开后恢复原状，
+它绘制进入状态并启动一个短的指针守卫。守卫在拥有该窗口的 frame 内解析指针位置：用 `mouse-pixel-position`
+减 `window-pixel-edges`，两者都相对同一个 frame；不要拿指针相对整个显示器的位置去减窗口报告的绝对边缘。
+子 frame 可能相对父 frame 摆放，而它报告的绝对边缘不含那段原点，两个坐标系一混，命中判定就会落到指针
+下面几行而不是指针所指的那一行。守卫只在仍有反馈可画时跟着指针，指针离开后恢复原状，
 再次进入仍由同一个探针接手。每段的原始帮助保存在 `ebox-help-echo` 中并由探针返回，
 echo area 与 tooltip 的输出因此不变。
 所有状态 face 都遵循这条规则：状态样式只声明它要改的属性，原生 face 复述节点自己的墨色、

@@ -315,6 +315,11 @@
       "purpose": "Mounting a hoverable tree never enables frame-wide mouse tracking; the painted help probe paints entry and starts the pointer guard, and motion resolved in another buffer releases the paint."
     },
     {
+      "name": "ebox-pointer-guard-reads-the-pointer-inside-its-frame",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "The pointer guard measures the pointer inside the window's own frame, so a child frame whose reported absolute origin omits its parent's does not follow the rows below the pointer."
+    },
+    {
       "name": "ebox-hover-content-follows-pointer-entry-and-leave",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Pointer entry through the painted help probe shows hover content, and leaving the target restores the resting text."
