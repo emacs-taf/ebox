@@ -136,8 +136,9 @@ layout 会跳过。
 
 文本测量按 text node、font face 与 wrap mode 缓存。paragraph layout 将文本拆成 pixel-width units，保留受支持
 cluster 与 fixed display space。face 的行高取正文所用字体中最大的 ascent 加 descent，每帧用拉丁与中日韩字符
-各探测一次，所以中文回退字体的行框更高时整行跟着变高，不会把中文缩进去。发布出来的每行末尾有一个零宽、正好
-一行高的空格，把只含较矮字形的行也垫到行高；它带着最后一格的文字属性，行尾绘制、hover 与命中判定仍归那一格。
+各探测一次，所以中文回退字体的行框更高时整行跟着变高，不会把中文缩进去。发布出来的每行开头带一个零宽、
+正好一行高的空格，把只含较矮字形的行也垫到行高；载体在行首，始终落在可见区域里，截断边界碰不到它。
+它带首格的文字属性，行首的 face、hover、help 与命中判定仍归那一格。buffer 文本在每行开头带这个载体。
 图形 frame 上，若某 cluster 的回退字体高于其 face 的行高（彩色 emoji、符号、数学字母，或字体 ascent/descent 超
 过默认字体的任何文字，每个字符只判定一次），则以能让该行保持一行高度的最大 `height` 缩放测量并绘制；判断时与
 普通字符同处一行，因为行高取最大 ascent 加最大 descent。这样每行都保持纵向网格与图像切片所依赖的行高。不使用 SVG 渲染 emoji：librsvg 的 Pango 后端遇到某些

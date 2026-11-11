@@ -175,9 +175,12 @@ fixed display spaces.  A face's line is as tall as the largest ascent plus the
 largest descent among the fonts that carry body text, probed once per frame
 with Latin and CJK characters, so a CJK font whose box reaches beyond the
 Latin one raises every row instead of shrinking Chinese text into it.  A
-published row ends with a zero-width space exactly one line high, which holds
-a row of shorter glyphs at that height; it carries the last cell's properties,
-so line-end paint, hover and hit testing stay with that cell.  On graphical
+published row starts with a zero-width space exactly one line high, which
+holds a row of shorter glyphs at that height.  The carrier sits at the line
+start, inside the visible area, so the truncation boundary cannot drop it.
+It carries the first cell's text properties, so the line's first column
+keeps that cell's face, hover, help and hit testing.  The buffer text carries
+the carrier at each line's start.  On graphical
 frames a cluster whose fallback font is taller than its face's line (colour
 emoji, symbols, mathematical letters or any script whose font ascent or
 descent exceeds the default font's, checked once per character) is measured

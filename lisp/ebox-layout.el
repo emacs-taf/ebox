@@ -2903,20 +2903,22 @@ decorations are applied afterwards, so they continue across overlays."
 
 (defun ebox--root-parts (root i)
   "Return the strings that line I of ROOT writes to a buffer, in order.
-The row ends with its strut, which keeps it one line high when its glyphs are
-shorter than the line."
+The line starts with its strut when its glyphs are shorter than the line
+height.  A leading strut is inside the visible area, so the truncation
+boundary cannot drop it the way it drops a trailing one."
   (let ((parts (ebox--join-parts (ebox--node-parts root i))))
     (if-let* ((strut (ebox--row-strut))
-              (last (car (last parts))))
-        (append parts (list (ebox--row-strut-part strut last)))
+              (head (cl-find-if (lambda (part) (> (length part) 0)) parts)))
+        (cons (ebox--row-strut-part strut head) parts)
       parts)))
 
-(defun ebox--row-strut-part (strut last)
-  "Return STRUT carrying the properties of LAST's final cell.
-The strut completes a row without paint of its own, so line-end background,
-hover and hit testing keep belonging to that cell."
+(defun ebox--row-strut-part (strut head)
+  "Return STRUT carrying HEAD's first cell's text properties.
+The strut starts a row, so that cell keeps the line's first column: its face,
+hover, help, pointer and key bindings.  HEAD's own display property is not
+copied, so the strut keeps its zero-width height display."
   (let ((part (substring strut 0))
-        (props (text-properties-at (1- (length last)) last)))
+        (props (text-properties-at 0 head)))
     (while props
       (unless (eq (car props) 'display)
         (put-text-property 0 (length part) (car props) (cadr props) part))

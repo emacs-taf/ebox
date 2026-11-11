@@ -21,6 +21,25 @@ This is the oracle for Ebox measurement on every supported Emacs version."
       (insert string)
       (cdr (buffer-text-pixel-size nil nil t)))))
 
+(defmacro ebox-test-with-tall-cjk (&rest body)
+  "Run BODY with a CJK font taller than the Latin one, then restore.
+Skips the test when the font is not installed on this machine."
+  (declare (indent 0))
+  `(let* ((frame (selected-frame))
+          (range '(#x4e00 . #x9fff))
+          (prior (fontset-font "fontset-default" #x4e00)))
+     (skip-unless (find-font (font-spec :family "Noto Serif CJK SC")))
+     (unwind-protect
+         (progn
+           (set-fontset-font "fontset-default" range
+                             (font-spec :family "Noto Serif CJK SC") frame)
+           ,@body)
+       (set-fontset-font "fontset-default" range
+                         (and prior
+                              (font-spec :family (car prior)
+                                         :registry (cdr prior)))
+                         frame))))
+
 (defmacro ebox-test-with-mounted (spec &rest body)
   "Mount SPEC's input in a new buffer, bind its root, run BODY, then clean up.
 SPEC has the form (BUFFER ROOT INPUT &rest OPTIONS)."

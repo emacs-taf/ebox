@@ -520,7 +520,8 @@ A glyph that no scale fits takes the last.")
   "Return the shared string that fills a published row to one line height.
 Its zero-width space is exactly the line high and places the baseline where
 images align, so a row holding only shorter glyphs still measures one line.
-Return nil when ordinary text already reaches the line."
+It starts the row, inside the visible area, so the truncation boundary
+cannot drop it.  Return nil when ordinary text already reaches the line."
   (let* ((metrics (or ebox--active-metrics
                       (ebox--display-metrics ebox--measure-buffer)))
          (line (plist-get metrics :line-height))

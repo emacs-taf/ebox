@@ -95,5 +95,47 @@
         (setf (plist-get metrics :char-width) 999999)
         (should (= (plist-get (ebox-display-metrics) :char-width) expected))))))
 
+(ert-deftest ebox-text-scale-keeps-untouched-row-heights ()
+  "A text scale change raises every row, including rows the update did not rewrite."
+  (skip-unless (and (display-graphic-p)
+                    (find-font (font-spec :family "Noto Serif CJK SC"))))
+  (let* ((frame (selected-frame))
+         (range '(#x4e00 . #x9fff))
+         (prior (fontset-font "fontset-default" #x4e00))
+         (shown (window-buffer (selected-window)))
+         (buffer (generate-new-buffer " *ebox-text-scale*")))
+    (unwind-protect
+        (progn
+          (set-fontset-font "fontset-default" range
+                            (font-spec :family "Noto Serif CJK SC") frame)
+          (set-window-buffer (selected-window) buffer)
+          (with-current-buffer buffer
+            (let* ((root (ebox-mount buffer '(column :width 'stretch
+                                                    (text :id "first" "0 0")
+                                                    (text :id "second" "汉汉"))
+                                     :width 200 :height 2))
+                   (first (car (ebox-selector-query root "#first")))
+                   (before (plist-get (ebox-display-metrics buffer) :line-height)))
+              (text-scale-increase 1)
+              (ebox-node-set-text first "00000")
+              (ebox-flush)
+              (redisplay t)
+              (let* ((line (plist-get (ebox-display-metrics buffer) :line-height))
+                     (second-start (save-excursion (goto-char (point-min))
+                                                   (forward-line 1) (point))))
+                (should (> line before))
+                (should (= (cdr (window-text-pixel-size
+                                 (selected-window)
+                                 second-start
+                                 (save-excursion (goto-char second-start)
+                                                 (line-end-position))))
+                           line))))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (set-window-buffer (selected-window) shown)
+      (set-fontset-font "fontset-default" range
+                        (and prior (font-spec :family (car prior)
+                                              :registry (cdr prior)))
+                        frame))))
+
 (provide 'ebox-text-scale-tests)
 ;;; ebox-text-scale-tests.el ends here

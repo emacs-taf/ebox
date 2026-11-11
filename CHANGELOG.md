@@ -13,6 +13,12 @@ made its line breaks too tight.  The line now covers the body fonts of the
 face, Latin and CJK, and every published row is one line high, so a taller
 CJK font raises the rows instead of shrinking its glyphs.
 
+- A row's height carrier starts the line instead of ending it.  A row of
+  shorter glyphs still takes the line height, and a row that reaches the
+  window's right edge keeps it instead of losing the carrier at the
+  truncation boundary.  The buffer text carries the carrier at each line's
+  start, so copied text includes it.
+
 - Pointer hover no longer sets `track-mouse' in a mounted buffer.  A painted
   `help-echo' probe paints entry and a short guard follows the pointer until
   no feedback remains, so motion over another window never runs a command

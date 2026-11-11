@@ -928,6 +928,21 @@
       "name": "ebox-body-text-rows-keep-the-line-height",
       "file": "tests/ebox-line-height-tests.el",
       "purpose": "Every published row measures one line height, so a CJK body font taller than the Latin one raises the line instead of shrinking Chinese text to fit it."
+    },
+    {
+      "name": "ebox-render-lines-carry-the-row-strut",
+      "file": "tests/ebox-line-height-tests.el",
+      "purpose": "A rendered string starts every line with the height carrier, so inserting it keeps every line's height."
+    },
+    {
+      "name": "ebox-full-width-rows-keep-the-line-height",
+      "file": "tests/ebox-line-height-tests.el",
+      "purpose": "A row reaching the window's right edge keeps the line height because the carrier starts the row."
+    },
+    {
+      "name": "ebox-text-scale-keeps-untouched-row-heights",
+      "file": "tests/ebox-text-scale-tests.el",
+      "purpose": "A text scale change raises every row, including rows the update did not rewrite."
     }
   ]
 }
