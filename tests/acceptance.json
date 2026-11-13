@@ -945,6 +945,16 @@
       "purpose": "A row reaching the window's right edge keeps the line height because the carrier starts the row."
     },
     {
+      "name": "ebox-overline-face-keeps-the-line-fit",
+      "file": "tests/ebox-line-height-tests.el",
+      "purpose": "An overline adds no height in a canvas, so a decorated glyph that fills its line is not scaled and the plain text after it keeps its own fit."
+    },
+    {
+      "name": "ebox-overline-fit-does-not-cross-overline-margins",
+      "file": "tests/ebox-line-height-tests.el",
+      "purpose": "A plain buffer counts an overline into the row height while a canvas does not, so the fitted scale does not pass between them."
+    },
+    {
       "name": "ebox-text-scale-keeps-untouched-row-heights",
       "file": "tests/ebox-text-scale-tests.el",
       "purpose": "A text scale change raises every row, including rows the update did not rewrite."

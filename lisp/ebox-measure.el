@@ -37,20 +37,28 @@
 (defvar-local ebox--remap-metrics-key nil
   "Metric-only projection of `ebox--remap-snapshot'.")
 
+(defvar-local ebox--remap-margin nil
+  "`overline-margin' that `ebox--remap-metrics-key' was built with.")
+
 (defun ebox--remap-key ()
-  "Return an immutable metric remapping key for the measuring buffer.
+  "Return an immutable metric context key for the measuring buffer.
 Emacs mutates remapping entries in place.  Snapshot only on change and
-ignore paint-only remaps so independent backgrounds share glyph metrics."
+ignore paint-only remaps so independent backgrounds share glyph metrics.
+`overline-margin' joins the key because it decides how far an overline
+raises a row; text measured under another value keeps its own metrics."
   (with-current-buffer (or ebox--measure-buffer (current-buffer))
-    (unless (equal ebox--remap-snapshot face-remapping-alist)
+    (unless (and (equal ebox--remap-snapshot face-remapping-alist)
+                 (eql ebox--remap-margin overline-margin))
       (setq ebox--remap-snapshot (copy-tree face-remapping-alist)
+            ebox--remap-margin overline-margin
             ebox--remap-metrics-key
-            (delq nil
-                  (mapcar (lambda (entry)
-                            (let ((metric (ebox--width-face (cdr entry))))
-                              (unless (equal metric (car entry))
-                                (cons (car entry) metric))))
-                          ebox--remap-snapshot))))
+            (cons overline-margin
+                  (delq nil
+                        (mapcar (lambda (entry)
+                                  (let ((metric (ebox--width-face (cdr entry))))
+                                    (unless (equal metric (car entry))
+                                      (cons (car entry) metric))))
+                                ebox--remap-snapshot)))))
     ebox--remap-metrics-key))
 
 (defvar-local ebox--display-metrics-cache nil
@@ -485,11 +493,16 @@ Only graphical frames have fonts; elsewhere every row is one text line."
 A glyph that no scale fits takes the last.")
 
 (defun ebox--measure-raw-size (string)
-  "Return STRING's (WIDTH . HEIGHT) in pixels in the measuring context."
-  (let ((remap (buffer-local-value 'face-remapping-alist
-                                   (or ebox--measure-buffer (current-buffer)))))
+  "Return STRING's (WIDTH . HEIGHT) in pixels in the measuring context.
+Overlines count for the ascent by `overline-margin', so a canvas that
+zeroes it to keep top borders tight must measure under the same value;
+the temporary buffer would otherwise use the global default."
+  (let* ((source (or ebox--measure-buffer (current-buffer)))
+         (remap (buffer-local-value 'face-remapping-alist source))
+         (margin (buffer-local-value 'overline-margin source)))
     (with-temp-buffer
       (setq-local face-remapping-alist remap
+                  overline-margin margin
                   line-spacing nil)
       (insert string)
       (buffer-text-pixel-size nil nil t))))

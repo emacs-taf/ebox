@@ -100,5 +100,55 @@ it."
       (should (eq (aref string 0) ?\u200b))
       (should (eq (aref string (1+ (string-search "\n" string))) ?\u200b)))))
 
+(ert-deftest ebox-overline-face-keeps-the-line-fit ()
+  "An overline adds no height in a canvas.
+A decorated glyph that fills its line keeps the plain scale, and the
+plain text after it does not inherit a fitted display."
+  (ebox-test-with-tall-cjk
+    (let* ((deco (propertize "焦" 'face '(:overline t)))
+           (buffer (generate-new-buffer " *ebox-overline-fit*")))
+      (unwind-protect
+          (progn
+            (ebox-mount buffer `(column :width 'stretch
+                                       (row (text ,deco))
+                                       (row (text "焦")))
+                        :width 200 :height 20)
+            (with-current-buffer buffer
+              (goto-char (point-min))
+              (let (displays)
+                (while (not (eobp))
+                  (when (search-forward "焦" (line-end-position) t)
+                    (push (get-text-property (1- (point)) 'display) displays))
+                  (forward-line 1))
+                (should (equal (nreverse displays) '(nil nil))))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest ebox-overline-fit-does-not-cross-overline-margins ()
+  "Text measured with another `overline-margin' keeps its own fit.
+A plain buffer counts an overline into the row height; a canvas does not,
+so the fitted scale must not pass between them."
+  (ebox-test-with-tall-cjk
+    (ebox-clear-cache)
+    (let ((plain (generate-new-buffer " *ebox-plain-render*")))
+      (unwind-protect
+          (with-current-buffer plain
+            (setq-local overline-margin 2)
+            (let* ((deco (propertize "焦" 'face '(:overline t)))
+                   (rendered (ebox-render `(column (row (text ,deco))))))
+              ;; The plain render sees the overline and caches a fitted scale.
+              (should (get-text-property (string-search "焦" rendered)
+                                         'display rendered))))
+        (when (buffer-live-p plain) (kill-buffer plain))))
+    (let ((canvas (generate-new-buffer " *ebox-overline-canvas*")))
+      (unwind-protect
+          (progn
+            (ebox-mount canvas '(column :width 'stretch (row (text "焦")))
+                        :width 200 :height 10)
+            (with-current-buffer canvas
+              (goto-char (point-min))
+              (should (search-forward "焦" nil t))
+              (should (null (get-text-property (1- (point)) 'display)))))
+        (when (buffer-live-p canvas) (kill-buffer canvas))))))
+
 (provide 'ebox-line-height-tests)
 ;;; ebox-line-height-tests.el ends here
