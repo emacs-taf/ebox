@@ -6,6 +6,15 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- A picture is drawn in the pixels the page places it in, so a display with two
+device pixels per point no longer shows its labels twice.  The prepared image
+asked for one image pixel per device pixel as well as for a width and height in
+page pixels.  On such a frame it was drawn at twice its size while its rows were
+still cut for the page size, so each row of it held half a row of the drawing:
+every label appeared again, a few pixels lower, and a diagram looked doubled
+while its boxes looked almost right.  Page pixels now decide the size, and the
+frame's own scale decides only how finely it is drawn.
+
 - Pointer hover follows the pointer inside its own frame.  The guard measured
 the display-absolute pointer against the window's reported absolute edges, but
 a child frame can be placed relative to its parent while those edges omit that

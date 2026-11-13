@@ -217,8 +217,16 @@ INSET is (TOP . BOTTOM) pixels left empty above and below the image."
                                         ;; drop its :id and data dimensions,
                                         ;; so slice the published one.
                                         source
+                                      ;; WIDTH and HEIGHT are page pixels, the
+                                      ;; same units the grid and the slices are
+                                      ;; cut in.  Asking for one image pixel per
+                                      ;; device pixel as well made a frame with
+                                      ;; two device pixels per page pixel draw
+                                      ;; the picture at twice its size, so each
+                                      ;; slice showed half a row of it and every
+                                      ;; label appeared twice.
                                       (apply #'create-image data type t :width width
-                                             :height height :scale 1 :ascent ascent
+                                             :height height :ascent ascent
                                              :margin 0
                                              (and ebox-image--background
                                                   (list :background
@@ -332,7 +340,7 @@ Preparation turns local image files into self-contained data descriptors."
            ;; The wrapper uses the already displayed dimensions; retaining the
            ;; original scale would scale twice.  Native margin, relief, ascent
            ;; and rotation still apply, and display slices are left untouched.
-           (append (list 'image :type 'svg :data svg :width width :height height :scale 1)
+           (append (list 'image :type 'svg :data svg :width width :height height)
                    (and background (list :background background)) variant)))))))
 
 (defun ebox-image--brightness-display (display amount foreground background)
