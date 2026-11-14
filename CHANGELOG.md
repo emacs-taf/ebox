@@ -49,6 +49,13 @@ CJK font raises the rows instead of shrinking its glyphs.
   instead of asking whether `point-max` is visible, so a canvas stays pinned
   instead of sliding every region at once.
 
+- A partial update that moves several rows and changes the page height leaves
+  no vacated row behind.  Each changed node was recorded at the line it now
+  occupies while the edit list still applied to the old page, so closing a
+  tall row and opening another kept the old header of a moved row under the
+  following block.  Such an update rewrites the page; a single changed node
+  keeps its line edits.
+
 ### Added
 
 - `ebox-keymap-create` accepts `:drag-edge`: a drag that has moved and rests
