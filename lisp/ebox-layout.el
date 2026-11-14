@@ -3061,7 +3061,13 @@ the next pass believes it painted."
       (let ((growth 0))
         (dolist (edit merged)
           (setq growth (+ growth (- (nth 2 edit) (nth 1 edit)))))
-        (if (and old-lines (/= (+ old-lines growth) height))
+        (if (or (and old-lines (/= (+ old-lines growth) height))
+                ;; Several ranges each start where their node now sits.  When
+                ;; the page also changes height, the ranges after the first
+                ;; sit at lines the old buffer does not hold there: their own
+                ;; node moved, so replacing at the new start leaves what the
+                ;; node used to occupy.  Rewrite the page instead.
+                (and (cdr merged) (/= growth 0)))
             'full
           (nreverse merged))))))
 
