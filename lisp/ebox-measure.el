@@ -20,10 +20,7 @@
   "Buffer whose face remapping applies to measurements, or nil.")
 
 (defvar ebox--width-tables (make-hash-table :test 'equal :weakness 'key)
-  "Map of immutable metric remappings to per-face width tables.")
-
-(defvar ebox--default-width-table (make-hash-table :test 'equal)
-  "Per-face width tables without buffer face remapping.")
+  "Map of immutable metric contexts to per-face tables.")
 
 (defvar ebox--cluster-width-cache (make-hash-table :test 'equal)
   "Width cache for multi-character clusters keyed by (FACE . STRING).")
@@ -31,35 +28,56 @@
 (defvar ebox--width-epoch 0
   "Counter incremented whenever measurement caches are cleared.")
 
-(defvar-local ebox--remap-snapshot nil
-  "Immutable snapshot of this buffer's measurement remapping.")
+(defconst ebox--metric-locals
+  '(face-remapping-alist overline-margin line-spacing
+    default-text-properties char-property-alias-alist
+    bidi-paragraph-direction)
+  "Buffer-local settings that decide a measured string's size.")
 
-(defvar-local ebox--remap-metrics-key nil
-  "Metric-only projection of `ebox--remap-snapshot'.")
+(defvar-local ebox--metric-snapshot nil
+  "Immutable snapshot of the values `ebox--metric-key' depends on.")
 
-(defvar-local ebox--remap-margin nil
-  "`overline-margin' that `ebox--remap-metrics-key' was built with.")
+(defvar-local ebox--metric-context nil
+  "Cached metric context key of this buffer.")
 
-(defun ebox--remap-key ()
-  "Return an immutable metric context key for the measuring buffer.
-Emacs mutates remapping entries in place.  Snapshot only on change and
-ignore paint-only remaps so independent backgrounds share glyph metrics.
-`overline-margin' joins the key because it decides how far an overline
-raises a row; text measured under another value keeps its own metrics."
+(defvar ebox--active-metric-key nil
+  "Metric context key bound for one layout pass, or nil outside one.")
+
+(defun ebox--metric-key ()
+  "Return the active metric context key, or compute this buffer's key.
+A layout binds one key for all its faces; the inputs cannot change until
+the pass finishes."
+  (or ebox--active-metric-key (ebox--compute-metric-key)))
+
+(defun ebox--compute-metric-key ()
+  "Return an immutable key for the measuring buffer's metric context.
+The key covers the frame and its font, the default face height, the measurement
+epoch, the face remapping, and the buffer-local settings that change a
+string's size.  Emacs mutates some of these in place, so compare the live
+values with a snapshot before rebuilding the key."
   (with-current-buffer (or ebox--measure-buffer (current-buffer))
-    (unless (and (equal ebox--remap-snapshot face-remapping-alist)
-                 (eql ebox--remap-margin overline-margin))
-      (setq ebox--remap-snapshot (copy-tree face-remapping-alist)
-            ebox--remap-margin overline-margin
-            ebox--remap-metrics-key
-            (cons overline-margin
-                  (delq nil
-                        (mapcar (lambda (entry)
-                                  (let ((metric (ebox--width-face (cdr entry))))
-                                    (unless (equal metric (car entry))
-                                      (cons (car entry) metric))))
-                                ebox--remap-snapshot)))))
-    ebox--remap-metrics-key))
+    (let* ((frame (window-frame (ebox--measuring-window)))
+           (font (and (window-system frame) (frame-parameter frame 'font)))
+           (height (and (window-system frame)
+                        (face-attribute 'default :height frame)))
+           (now (list ebox--width-epoch frame font height
+                      overline-margin line-spacing
+                      default-text-properties char-property-alias-alist
+                      face-remapping-alist)))
+      (unless (equal now ebox--metric-snapshot)
+        (setq ebox--metric-snapshot (copy-tree now)
+              ebox--metric-context
+              (list ebox--width-epoch frame font height
+                    overline-margin line-spacing
+                    (copy-tree default-text-properties)
+                    (copy-tree char-property-alias-alist)
+                    (delq nil
+                          (mapcar (lambda (entry)
+                                    (let ((metric (ebox--metric-face (cdr entry))))
+                                      (unless (equal metric (car entry))
+                                        (cons (car entry) metric))))
+                                  (copy-tree face-remapping-alist))))))
+      ebox--metric-context)))
 
 (defvar-local ebox--display-metrics-cache nil
   "Last font context and effective default-face metrics for this buffer.")
@@ -126,19 +144,11 @@ The returned plist belongs to the measuring layer and must not be changed."
     (let* ((ebox--measure-buffer (current-buffer))
            (window (ebox--measuring-window))
            (frame (window-frame window))
-           ;; Text displays have unit cells, not a font whose metrics need
-           ;; probing.  Avoid allocating the terminal face description.
-           (font (and (window-system frame) (frame-parameter frame 'font)))
-           (height (and (window-system frame) (face-attribute 'default :height frame)))
-           (remap (ebox--remap-key))
-           (key (car ebox--display-metrics-cache)))
-      (unless (and (eq frame (nth 0 key))
-                   (eql ebox--width-epoch (nth 1 key))
-                   (equal font (nth 2 key))
-                   (eql height (nth 3 key))
-                   (equal remap (nth 4 key)))
+           (context (ebox--metric-key))
+           (cache (car ebox--display-metrics-cache)))
+      (unless (equal context cache)
         (setq ebox--display-metrics-cache
-              (cons (list frame ebox--width-epoch font height remap)
+              (cons context
                     (if (not (window-system frame))
                         '(:char-width 1 :line-height 1 :ascent 100)
                       (let ((face (or (cdr (assq 'default face-remapping-alist))
@@ -154,22 +164,23 @@ The returned plist belongs to the measuring layer and must not be changed."
                                   :ascent (min 100 (max 1 (ceiling (* 100.0 ascent) height)))))))))))
       (cdr ebox--display-metrics-cache))))
 
-(defconst ebox--paint-only-attributes
-  '(:foreground :background :distant-foreground :underline :overline
+(defconst ebox--metric-neutral-attributes
+  '(:foreground :background :distant-foreground :underline
     :strike-through :extend :stipple)
-  "Face attributes that never change glyph advances.")
+  "Face attributes that never change glyph advances or line metrics.")
 
-(defun ebox--width-face (face)
-  "Return the face whose metrics FACE shares for width measurement.
-A plist naming only paint attributes measures like the default face, and a
-list of faces drops such members."
+(defun ebox--metric-face (face)
+  "Return the face whose metrics FACE shares.
+A plist naming only metric-neutral attributes measures like the default
+face, and a list of faces drops such members.  `:overline' stays: it adds
+`overline-margin' pixels to a row's ascent."
   (cond ((atom face) face)
         ((keywordp (car face))
          (let ((rest face))
-           (while (and rest (memq (car rest) ebox--paint-only-attributes))
+           (while (and rest (memq (car rest) ebox--metric-neutral-attributes))
              (setq rest (cddr rest)))
            (and rest face)))
-        (t (let ((kept (delq nil (mapcar #'ebox--width-face face))))
+        (t (let ((kept (delq nil (mapcar #'ebox--metric-face face))))
              (if (cdr kept) kept (car kept))))))
 
 (defun ebox--merge-face (own face)
@@ -179,27 +190,25 @@ list of faces drops such members."
         (t (list own face))))
 
 (defvar ebox--face-memo (make-vector 3 nil)
-  "The last [REMAP-KEY FACE TABLE] lookup of `ebox--face-table'.")
+  "The last [CONTEXT-KEY FACE TABLE] lookup of `ebox--face-table'.")
 
 (defun ebox--face-table (face)
-  "Return the width table of FACE for the current measuring context.
-Faces with equal width attributes share one table: painting conses fresh
+  "Return the metric table of FACE for the current measuring context.
+Faces with equal metric attributes share one table: painting conses fresh
 face plists, which must not re-measure every character."
-  (let ((key (ebox--remap-key))
+  (let ((key (ebox--metric-key))
         (memo ebox--face-memo))
     (if (and (aref memo 2) (eq face (aref memo 1)) (eq key (aref memo 0)))
         (aref memo 2)
-      (let* ((tables (if key
-                         (or (gethash key ebox--width-tables)
-                             (puthash key (make-hash-table :test 'equal)
-                                      ebox--width-tables))
-                       ebox--default-width-table))
+      (let* ((tables (or (gethash key ebox--width-tables)
+                         (puthash key (make-hash-table :test 'equal)
+                                  ebox--width-tables)))
              (table
               (or (gethash face tables)
                   (puthash face
-                           (let ((width-face (ebox--width-face face)))
-                             (or (gethash width-face tables)
-                                 (puthash width-face
+                           (let ((metric (ebox--metric-face face)))
+                             (or (gethash metric tables)
+                                 (puthash metric
                                           (cons (make-vector 128 nil)
                                                 (make-hash-table :test 'eq))
                                           tables)))
@@ -236,14 +245,10 @@ redisplay per flush."
     (or (eq max 'many) (>= max 2)))
   "Non-nil when `string-pixel-width' accepts a BUFFER (Emacs 31 and later).")
 
-(defconst ebox--pixel-width-locals
-  '(face-remapping-alist char-property-alias-alist default-text-properties)
-  "Buffer-local variables that select glyphs when measuring for a buffer.")
-
 (defun ebox--buffer-string-pixel-width (string buffer)
   "Return the pixel width of STRING displayed in BUFFER.
-BUFFER's face remapping, property aliases and default text properties apply,
-as `string-pixel-width' applies them in Emacs 31."
+BUFFER's display settings apply, as `string-pixel-width' applies them in
+Emacs 31."
   (cond
    (ebox--native-buffer-pixel-width
     ;; The older byte compiler sees this unreachable Emacs 31 arity; the
@@ -257,9 +262,9 @@ as `string-pixel-width' applies them in Emacs 31."
                                            (cons variable
                                                  (buffer-local-value
                                                   variable buffer))))
-                                    ebox--pixel-width-locals))))
+                                    ebox--metric-locals))))
       (with-current-buffer (get-buffer-create " *ebox-pixel-width*")
-        (dolist (variable ebox--pixel-width-locals)
+        (dolist (variable ebox--metric-locals)
           (kill-local-variable variable))
         (pcase-dolist (`(,variable . ,value) locals)
           (set (make-local-variable variable) value))
@@ -393,12 +398,12 @@ Other display modifiers, such as `raise', do not change the slice width."
 (defun ebox--display-width (string start end &optional face)
   "Measure display run START..END of STRING under FACE.
 Fixed spaces need no measurement, and an image keeps its width while its
-specification object and the measuring buffer's remapping stay the same."
+specification object and the measuring context stay the same."
   (let ((display (get-text-property start 'display string)))
     (or (ebox--fixed-space-width display)
         (ebox--slice-width display start end)
         (if (eq (car-safe display) 'image)
-            (let ((key (ebox--remap-key))
+            (let ((key (ebox--metric-key))
                   (cached (gethash display ebox--image-widths)))
               (if (and cached (eq (car cached) key))
                   (cdr cached)
@@ -494,16 +499,18 @@ A glyph that no scale fits takes the last.")
 
 (defun ebox--measure-raw-size (string)
   "Return STRING's (WIDTH . HEIGHT) in pixels in the measuring context.
-Overlines count for the ascent by `overline-margin', so a canvas that
-zeroes it to keep top borders tight must measure under the same value;
-the temporary buffer would otherwise use the global default."
-  (let* ((source (or ebox--measure-buffer (current-buffer)))
-         (remap (buffer-local-value 'face-remapping-alist source))
-         (margin (buffer-local-value 'overline-margin source)))
+Copy the display settings of the buffer the string will be shown in.  The
+line-number column and line and wrap prefixes are Ebox's own display, so a
+mounted canvas owns them and the work buffer leaves them out."
+  (let ((source (or ebox--measure-buffer (current-buffer))))
     (with-temp-buffer
-      (setq-local face-remapping-alist remap
-                  overline-margin margin
-                  line-spacing nil)
+      (dolist (variable ebox--metric-locals)
+        (set (make-local-variable variable)
+             (buffer-local-value variable source)))
+      (setq-local display-line-numbers nil
+                  line-prefix ""
+                  wrap-prefix ""
+                  truncate-lines t)
       (insert string)
       (buffer-text-pixel-size nil nil t))))
 
@@ -878,9 +885,8 @@ See `ebox--join'."
     (ebox--line-width (if newline (substring source 0 newline) source))))
 
 (defun ebox-clear-cache ()
-  "Clear pixel width caches after font or named face metrics change."
+  "Clear pixel caches after font, theme or named face metrics change."
   (clrhash ebox--width-tables)
-  (clrhash ebox--default-width-table)
   (clrhash ebox--cluster-width-cache)
   (clrhash ebox--space-cache)
   (clrhash ebox--image-widths)
@@ -888,6 +894,17 @@ See `ebox--join'."
   (setq ebox--tall-chars (make-char-table 'ebox-tall-chars)
         ebox--default-font-box nil)
   (cl-incf ebox--width-epoch))
+
+(defun ebox--reset-metrics (&rest _)
+  "Reset measurement caches after a theme or frame font change."
+  (ebox-clear-cache))
+
+(when (boundp 'enable-theme-functions)
+  (add-hook 'enable-theme-functions #'ebox--reset-metrics))
+(when (boundp 'disable-theme-functions)
+  (add-hook 'disable-theme-functions #'ebox--reset-metrics))
+(when (boundp 'after-setting-font-hook)
+  (add-hook 'after-setting-font-hook #'ebox--reset-metrics))
 
 (provide 'ebox-measure)
 

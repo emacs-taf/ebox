@@ -150,5 +150,62 @@ so the fitted scale must not pass between them."
               (should (null (get-text-property (1- (point)) 'display)))))
         (when (buffer-live-p canvas) (kill-buffer canvas))))))
 
+(ert-deftest ebox-plain-buffer-keeps-overline-and-plain-fits-apart ()
+  "A plain buffer counts an overline into the row height.
+The decorated glyph fits its taller row, and the plain glyph after it keeps
+its own fit instead of reusing the decorated scale."
+  (ebox-test-with-tall-cjk
+    (ebox-clear-cache)
+    (with-temp-buffer
+      (setq-local overline-margin 2)
+      (let* ((deco (propertize "焦" 'face '(:overline t)))
+             (rendered (ebox-render `(column (row (text ,deco))
+                                             (row (text "焦")))))
+             (positions (let ((i 0) out)
+                          (while (setq i (string-search "焦" rendered i))
+                            (push i out)
+                            (setq i (1+ i)))
+                          (nreverse out))))
+        (should (= (length positions) 2))
+        (should (get-text-property (nth 0 positions) 'display rendered))
+        (should (null (get-text-property (nth 1 positions) 'display rendered)))))))
+
+(ert-deftest ebox-canvas-owns-line-metrics ()
+  "A canvas zeroes the display settings its rows cannot honor.
+Line spacing, line numbers and line and wrap prefixes would move rows away
+from the measured layout; default text properties and property aliases are
+left alone because measurement copies them."
+  (let ((line-spacing 4)
+        (display-line-numbers t)
+        (line-prefix "-")
+        (wrap-prefix "-")
+        (default-text-properties '(:foreground "red"))
+        (char-property-alias-alist '((face font-lock-face))))
+    (ebox-test-with-mounted (buffer root '(column (text "0")) :width 100 :height 2)
+      (should (null (buffer-local-value 'line-spacing buffer)))
+      (should (null (buffer-local-value 'display-line-numbers buffer)))
+      (should (null (buffer-local-value 'line-prefix buffer)))
+      (should (null (buffer-local-value 'wrap-prefix buffer)))
+      (should (equal (buffer-local-value 'default-text-properties buffer)
+                     '(:foreground "red")))
+      (should (equal (buffer-local-value 'char-property-alias-alist buffer)
+                     '((face font-lock-face)))))))
+
+(ert-deftest ebox-font-change-updates-cached-width ()
+  "Changing the frame font updates cached glyph widths.
+The metric context carries the frame and its font, so a height change cannot
+leave a stale table behind."
+  (skip-unless (display-graphic-p))
+  (let* ((frame (selected-frame))
+         (height (face-attribute 'default :height frame)))
+    (unwind-protect
+        (progn
+          (ebox-clear-cache)
+          (let ((before (ebox-string-pixel-width "0")))
+            (set-face-attribute 'default frame :height (+ height 80))
+            (should (> (ebox-string-pixel-width "0") before))))
+      (set-face-attribute 'default frame :height height)
+      (ebox-clear-cache))))
+
 (provide 'ebox-line-height-tests)
 ;;; ebox-line-height-tests.el ends here

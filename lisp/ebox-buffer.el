@@ -48,14 +48,20 @@
 (defconst ebox--display-locals
   '((bidi-paragraph-direction . left-to-right)
     (truncate-lines . t)
-    (long-line-threshold . nil))
+    (long-line-threshold . nil)
+    (line-spacing . nil)
+    (display-line-numbers . nil)
+    (line-prefix . nil)
+    (wrap-prefix . nil))
   "Display settings of a mounted buffer and the values Ebox gives them.
 Ebox lays rows out left to right, so a paragraph detected as right-to-left
 would mirror whole rows.  Native continuation must not wrap the assembled
 rows again or reserve a continuation column at their right edge.
 Row length is bounded by the layout width, so
 the long-line scan Emacs repeats over the whole buffer after text changes
-cannot find anything.")
+cannot find anything.  Line spacing, line numbers and line and wrap
+prefixes would make the display disagree with the measured rows, so the
+canvas owns them as well.")
 
 (defun ebox--own-display ()
   "Apply `ebox--display-locals' to the current buffer; return the old state."
@@ -87,7 +93,7 @@ root's color keeps them the same as the application surface."
             (and bg (face-remap-add-relative 'default :background bg)))
       ;; Record Ebox's paint-only remap at its mutation boundary, not on the
       ;; next unrelated measurement or input event.
-      (ebox--remap-key))))
+      (ebox--compute-metric-key))))
 
 (defun ebox--release-canvas (mount)
   "Remove the background remapping of MOUNT's buffer."
@@ -992,6 +998,7 @@ every row an interactive element spans."
          ;; Glyphs are measured under the mounting buffer's faces, so its
          ;; text scale and remappings select the sizes being laid out.
          (ebox--measure-buffer (ebox-mount-buffer mount))
+         (ebox--active-metric-key (ebox--compute-metric-key))
          (ebox--active-metrics (ebox--display-metrics ebox--measure-buffer))
          (ebox--vw (ebox-mount-vw mount))
          (ebox--vh (ebox-mount-vh mount))
@@ -1082,6 +1089,7 @@ are measured under the current buffer's faces, so its text scale applies."
          (ebox--vw (ebox--default-viewport-width))
          (ebox--vh (ebox--default-viewport-height))
          (ebox--measure-buffer (current-buffer))
+         (ebox--active-metric-key (ebox--compute-metric-key))
          (ebox--active-metrics (ebox--display-metrics ebox--measure-buffer))
          (ebox--record nil)
          (ebox--damage nil))

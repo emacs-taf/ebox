@@ -955,6 +955,21 @@
       "purpose": "A plain buffer counts an overline into the row height while a canvas does not, so the fitted scale does not pass between them."
     },
     {
+      "name": "ebox-plain-buffer-keeps-overline-and-plain-fits-apart",
+      "file": "tests/ebox-line-height-tests.el",
+      "purpose": "A plain buffer fits a decorated glyph into its taller row while the following plain glyph keeps its own fit."
+    },
+    {
+      "name": "ebox-canvas-owns-line-metrics",
+      "file": "tests/ebox-line-height-tests.el",
+      "purpose": "A canvas zeroes line spacing, line numbers and line and wrap prefixes so the display agrees with the measured rows, while default text properties and aliases stay available to measurement."
+    },
+    {
+      "name": "ebox-font-change-updates-cached-width",
+      "file": "tests/ebox-line-height-tests.el",
+      "purpose": "A frame font height change updates cached glyph widths because the frame and its font are part of the metric context."
+    },
+    {
       "name": "ebox-text-scale-keeps-untouched-row-heights",
       "file": "tests/ebox-text-scale-tests.el",
       "purpose": "A text scale change raises every row, including rows the update did not rewrite."
