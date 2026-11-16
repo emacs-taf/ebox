@@ -98,12 +98,12 @@ The frame keeps the border box width, so layout does not change."
 The raised node's children inherit the weight, while a root-level size change
 is the application's global choice and stays unemphasized."
   (let* ((rendered (ebox-render '(column (text "body")
-                                          (box :font-size 24 (text "head")))))
+                                          (box :font-size 1.4 (text "head")))))
          (head (1+ (length (nth 0 (split-string rendered "\n"))))))
     (should (eq (plist-get (get-text-property head 'face rendered) :weight) 'bold))
     (should-not (plist-get (get-text-property 0 'face rendered) :weight))
     (should-not (plist-get (get-text-property 0 'face
-                                              (ebox-render '(text :font-size 24 "root")))
+                                              (ebox-render '(text :font-size 1.4 "root")))
                            :weight))))
 
 (ert-deftest ebox-render-side-borders-paint-their-width ()

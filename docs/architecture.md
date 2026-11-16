@@ -183,16 +183,33 @@ keeps that cell's face, hover, help and hit testing.  The buffer text carries
 the carrier at each line's start.  On graphical
 frames a cluster whose fallback font is taller than its face's line (colour
 emoji, symbols, mathematical letters or any script whose font ascent or
-descent exceeds the default font's, checked once per character) is measured
-and painted at the largest `height` scale that keeps the row at one line,
-judged beside an ordinary character because a row takes the largest ascent
-plus the largest descent.  Rows therefore keep the line height the vertical grid and
+descent exceeds the fonts that carry that face's body text, checked once per
+character) is measured and painted at the largest scale of its own face that
+keeps the row at one line, judged beside an ordinary character because a row
+takes the largest ascent plus the largest descent.  A style's size is a ratio
+of the body size, so a heading keeps its proportion on any platform: the ratio
+becomes one face height from the frame's default font, and a fitted glyph
+shrinks from that height rather than from the default face.  Rows therefore keep the line height the vertical grid and
 image slices rely on.  SVG-rendered emoji are avoided: librsvg's Pango backend
 aborts Emacs on some emoji.  Boxes resolve horizontal sizes in pixels and vertical
 sizes in lines.  Row and column position direct children on one axis.  Flex
 performs main-size growth/shrink with min/max freezing, wrapping and alignment.
 Grid expands tracks, resolves fixed/intrinsic/fractional sizes and places items
 by one-based grid positions.
+
+A face therefore carries two heights, and they answer different questions.
+`ebox--face-text-height` probes Latin `0` alone: the shortest a row of that
+face's text can be.  `ebox--row-strut` compares it with the line height, so
+only a row of shorter glyphs is held at the line.  `ebox--face-body-height`
+probes `0` and a CJK character together, the scripts the default face's line
+box covers; `ebox--face-line-height` keeps the larger of it and the default
+line box, and `ebox--fit` measures a glyph beside that line to find one taller
+than its face's line.  Merging them breaks one side or the other: a CJK probe
+in the text height makes the strut's `(> line text)` test read equal values as
+nothing to gain, so Latin-only rows stop filling the line, while a Latin probe
+in the body height makes an enlarged heading treat its own Chinese as an
+overflowing fallback glyph and paint it at 0.81 of its size.  The strut asks
+how short a row may be; the fit test asks how tall that face's body text is.
 
 Absolute boxes are registered with a positioning host: the nearest non-inline
 parent, or the root for `:layer root`.  Local overlays compose

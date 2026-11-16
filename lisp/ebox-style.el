@@ -813,8 +813,13 @@ non-negative number; values below 1 dim the cells behind the overlay."
            (null (cddr value)))))
 
 (defun ebox-style--font-size-p (value)
-  "Return non-nil when VALUE is a positive CSS reference-pixel size."
-  (or (null value) (and (numberp value) (> value 0))))
+  "Return non-nil when VALUE is a body-relative size ratio.
+The ratio is what makes every size follow the reader's default font: 1 is the
+body size, 1.42 a heading, 0.85 a caption.  A value outside 0.3 to 4 is a
+pixel size left over from the older absolute API, which would multiply the
+whole interface."
+  (or (null value)
+      (and (numberp value) (<= 0.3 value) (<= value 4))))
 
 (defun ebox-style--font-weight-p (value)
   "Return non-nil when VALUE is a canonical CSS font weight."

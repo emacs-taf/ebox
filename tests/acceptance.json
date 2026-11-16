@@ -970,6 +970,21 @@
       "purpose": "A frame font height change updates cached glyph widths because the frame and its font are part of the metric context."
     },
     {
+      "name": "ebox-larger-face-keeps-its-cjk-on-the-line",
+      "file": "tests/ebox-line-height-tests.el",
+      "purpose": "A face that raises the size probes the same body scripts as the default face, so a heading holds Chinese at the size the style asked for instead of reading the CJK font as an overflowing fallback glyph."
+    },
+    {
+      "name": "ebox-fitted-glyph-shrinks-from-its-own-size",
+      "file": "tests/ebox-line-height-tests.el",
+      "purpose": "A bare height display factor multiplies the default face, so a fitted glyph carries its own face height and a tall CJK font cannot drop a heading to the body size."
+    },
+    {
+      "name": "ebox-font-size-is-a-ratio-of-the-body-size",
+      "file": "tests/ebox-line-height-tests.el",
+      "purpose": "A style size is a multiple of the default face height, so the same heading keeps its relative size on every platform and reader default font."
+    },
+    {
       "name": "ebox-text-scale-keeps-untouched-row-heights",
       "file": "tests/ebox-text-scale-tests.el",
       "purpose": "A text scale change raises every row, including rows the update did not rewrite."
