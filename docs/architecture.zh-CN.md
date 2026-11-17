@@ -140,11 +140,22 @@ cluster 与 fixed display space。face 的行高取正文所用字体中最大�
 正好一行高的空格，把只含较矮字形的行也垫到行高；载体在行首，始终落在可见区域里，截断边界碰不到它。
 它带首格的文字属性，行首的 face、hover、help 与命中判定仍归那一格。buffer 文本在每行开头带这个载体。
 图形 frame 上，若某 cluster 的回退字体高于其 face 的行高（彩色 emoji、符号、数学字母，或字体 ascent/descent 超
-过默认字体的任何文字，每个字符只判定一次），则以能让该行保持一行高度的最大 `height` 缩放测量并绘制；判断时与
-普通字符同处一行，因为行高取最大 ascent 加最大 descent。这样每行都保持纵向网格与图像切片所依赖的行高。不使用 SVG 渲染 emoji：librsvg 的 Pango 后端遇到某些
+过该 face 正文所用字体的任何文字，每个字符只判定一次），则以该 face 自己的字号为基准、取能让该行保持一行高度的
+最大比例缩放并绘制；判断时与普通字符同处一行，因为行高取最大 ascent 加最大 descent。样式里的字号是相对正文的
+比例，所以标题在任何平台上都保持同一比例：比例一旦换成默认字体给出的 face 高度，被压缩的字形就从那个高度缩，
+而不是从默认 face 缩。这样每行都保持纵向网格与图像切片所依赖的行高。不使用 SVG 渲染 emoji：librsvg 的 Pango 后端遇到某些
 emoji 会使 Emacs 中止。box 在横向解析为像素、纵向解析为行。row 与 column 沿一个轴定位直接子节点。
 flex 使用 min/max freezing、wrapping 与 alignment 做 main-size grow/shrink。grid 展开 track、解析 fixed/intrinsic/
 fractional size，并按一基 grid position 放置 item。
+
+所以一个 face 要留两个高度。
+`ebox--face-text-height` 只量拉丁 `0`，量出这一行最短能有多矮；行末 strut 拿它跟行高比，
+只决定这一行要不要垫到整行。
+`ebox--face-body-height` 量 `0汉` 两个探针，代表这个 face 的正文行盒；
+`ebox--face-line-height` 取它跟默认行盒的较大值，`ebox--fit` 再用这个行高判断字形有没有超高。
+合成一个两边都会坏：放进中文探针，strut 的 `(> line text)` 判据在等高时判为没有差值，
+只含拉丁的行不再撑满整行；只量拉丁，放大字号的标题又把中文当成超高回退字形，压到 0.81 倍。
+strut 关心这一行能多矮，fit 关心这个 face 的正文有多高，两个问题不同，各留一个函数。
 
 absolute box 注册到 positioning host（最近的非 inline 父节点；`:layer root` 时为根）。本地 overlay 在 host 内从其内容原点组合；未锚定的 root-targeted overlay 从根的 border box 原点起算，使页面级遮罩覆盖根 padding，并仍保留逻辑 parent 供 style
 与 selector 使用。anchored overlay 从唯一 target 计算 placement，并在 normal layout 后放置，使 target 移动无需触发

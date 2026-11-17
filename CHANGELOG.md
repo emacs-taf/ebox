@@ -4,7 +4,25 @@ All notable changes to Ebox are documented here.
 
 ## Unreleased
 
+### Changed
+
+- `:font-size` is a ratio of the body size, not a pixel size.  A style says
+  `1.42` for a heading and `0.85` for a caption, and Ebox turns that into the
+  face height the frame's own default font gives it.  The old pixel size
+  assumed 96 dots per inch and had to be converted at every use, which is what
+  made one document look different on two platforms and left a second
+  conversion in every application.
+
 ### Fixed
+
+- A face that raises the size keeps its Chinese as tall as its Latin.  A
+  face's line box probed only the Latin `"0"`, so a heading read its CJK font
+  as an overflowing fallback glyph and fitted the text down to the body size.
+  The line box now probes the same body scripts as the default face, per face.
+
+- A fitted glyph shrinks from its own size.  The `height` display factor counts
+  from the default face, so a heading that needed a slight fit fell to the body
+  size; the factor now carries the face's own height.
 
 - A picture is drawn in the pixels the page places it in, so a display with two
 device pixels per point no longer shows its labels twice.  The prepared image

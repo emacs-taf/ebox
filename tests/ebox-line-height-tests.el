@@ -207,5 +207,91 @@ leave a stale table behind."
       (set-face-attribute 'default frame :height height)
       (ebox-clear-cache))))
 
+(defun ebox-test-line-heights (buffer window)
+  "Return the pixel height of every line BUFFER shows in WINDOW."
+  (with-current-buffer buffer
+    (save-excursion
+      (let (heights)
+        (goto-char (point-min))
+        (while (not (eobp))
+          (push (cdr (window-text-pixel-size window (line-beginning-position)
+                                             (line-end-position)))
+                heights)
+          (forward-line 1))
+        (nreverse heights)))))
+
+(defmacro ebox-test-with-body-and-heading (&rest body)
+  "Measure a body row and a 1.42 heading row, then run BODY with both.
+BODY sees `body-height' and `heading-height' in pixels."
+  `(ebox-test-with-mounted (buffer root '(column :width (px 200)
+                                               (row (text "汉汉"))
+                                               (row (text "汉汉" :font-size 1.42))))
+     (let* ((window (selected-window))
+            (shown (window-buffer window)))
+       (unwind-protect
+           (progn
+             (set-window-buffer window buffer)
+             (redisplay t)
+             (let* ((heights (ebox-test-line-heights buffer window))
+                    (body-height (nth 0 heights))
+                    (heading-height (nth 1 heights)))
+               (should (= 2 (length heights)))
+               ,@body))
+         (set-window-buffer window shown)))))
+
+(ert-deftest ebox-larger-face-keeps-its-cjk-on-the-line ()
+  "A face that raises the size keeps its Chinese on a taller line.
+The face's line box probes the same body scripts as the default face, so a
+heading holds Chinese at the size the style asked for instead of reading the
+CJK font as an overflowing fallback glyph and shrinking the text."
+  (skip-unless (display-graphic-p))
+  (ebox-test-with-body-and-heading
+   (let ((ratio (/ (* 1.0 heading-height) body-height)))
+     ;; The heading is 1.42 of the body, whatever the platform's fonts are.
+     (should (>= ratio 1.3))
+     (should (<= ratio 1.8)))))
+
+(ert-deftest ebox-fitted-glyph-shrinks-from-its-own-size ()
+  "A fitted glyph is scaled from its face's height, not from the body height.
+A bare `height' display factor is a multiple of the default face, so the
+factor has to carry the face's own size; otherwise a heading that needs a
+slight fit drops to the body size."
+  (skip-unless (display-graphic-p))
+  (ebox-test-with-tall-cjk
+    (ebox-clear-cache)
+    (ebox-test-with-body-and-heading
+     ;; A CJK font taller than the Latin one is what used to trigger the drop.
+     (should (> heading-height body-height))
+     (with-current-buffer buffer
+       (goto-char (point-min))
+       (when (search-forward "汉" nil t)
+         (let ((factor (plist-get (get-text-property (1- (point)) 'display)
+                                  :height)))
+           ;; The old code wrote 0.81 here, a fraction of the default face.
+           (when (numberp factor)
+             (should (> factor 1.0)))))))))
+
+(ert-deftest ebox-font-size-is-a-ratio-of-the-body-size ()
+  "A style size is a multiple of the default face height.
+The ratio is what keeps a heading the same relative size on every platform,
+whatever the reader's default font."
+  (let* ((rendered (ebox-render
+                    '(column (row (text "A" :font-size 1))
+                             (row (text "B" :font-size 1.42))
+                             (row (text "C" :font-size 0.85)))))
+         (heights (mapcar (lambda (char)
+                            (let* ((position (string-search char rendered))
+                                   (plists (ebox-test-face-plists
+                                            (get-text-property position 'face rendered))))
+                              (cl-some (lambda (plist) (plist-get plist :height))
+                                       plists)))
+                          '("A" "B" "C")))
+         (body (nth 0 heights)))
+    (should (integerp body))
+    (should (< (abs (- (nth 1 heights) (* 1.42 body))) 2.0))
+    (should (< (abs (- (nth 2 heights) (* 0.85 body))) 2.0))
+    ;; A CSS pixel size is no longer a size; it fails the style check.
+    (should-error (ebox-render '(column (row (text "D" :font-size 16)))))))
+
 (provide 'ebox-line-height-tests)
 ;;; ebox-line-height-tests.el ends here

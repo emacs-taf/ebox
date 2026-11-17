@@ -514,13 +514,78 @@ mounted canvas owns them and the work buffer leaves them out."
       (insert string)
       (buffer-text-pixel-size nil nil t))))
 
+(defvar ebox--default-height-cache nil
+  "Cons of a metric key and the default face height in 1/10 pt.")
+
+(defun ebox--default-height ()
+  "Return the default face's height in 1/10 pt on the measuring frame.
+Every size in Ebox is expressed against this number, so a reader who
+changes the default font scales the whole interface with it."
+  (let ((context (ebox--metric-key)))
+    (if (equal context (car ebox--default-height-cache))
+        (cdr ebox--default-height-cache)
+      (let* ((window (ebox--measuring-window))
+             (frame (window-frame window))
+             (height (if (window-system frame)
+                         (with-selected-window window
+                           (face-attribute 'default :height frame))
+                       12)))
+        (when (floatp height)
+          (setq height (round (* 100 height))))
+        (setq height (if (and (integerp height) (> height 0)) height 120))
+        (setq ebox--default-height-cache (cons context height))
+        height))))
+
+(defun ebox--font-height (ratio)
+  "Return the absolute face height in 1/10 pt for RATIO of the body size.
+A style declares a ratio, so 1.42 means one and a half times the reader's
+body text, whatever its point size and the screen resolution."
+  (max 10 (round (* (ebox--default-height) (float ratio)))))
+
+(defun ebox--face-size (face)
+  "Return FACE's height in 1/10 pt, composing FACE the way Emacs does.
+A float `:height' scales the height accumulated before it, an integer sets
+it, and a face that names neither keeps the default height."
+  (let ((height (ebox--default-height))
+        (items (if (and (consp face) (not (keywordp (car face)))) face (list face))))
+    (dolist (item items)
+      (when (and (consp item) (keywordp (car item)))
+        (let ((own (plist-get item :height)))
+          (cond ((integerp own) (setq height own))
+                ((floatp own) (setq height (round (* height own))))))))
+    (max 10 height)))
+
+(defun ebox--fit-spec (face scale)
+  "Return the display spec painting FACE's glyph at SCALE of its height.
+A `height' display spec is a factor of the default face, so the factor has
+to carry the face's own size.  A bare factor would drop a heading to the
+body size instead of shrinking it from where it was."
+  (list 'height (/ (* (float (ebox--face-size face)) scale)
+                   (max 1 (ebox--default-height)))))
+
 (defun ebox--face-text-height (face)
-  "Return the pixel height of ordinary text under FACE."
+  "Return the pixel height of ordinary Latin text under FACE.
+This is the shortest a row of FACE's text can be, so the row strut uses it
+to decide whether a row needs holding at the line height."
   (let ((hash (cdr (ebox--face-table face))))
     (or (gethash 'text-height hash)
         (puthash 'text-height
                  (cdr (ebox--measure-raw-size
                        (if face (propertize "0" 'face face) "0")))
+                 hash))))
+
+(defun ebox--face-body-height (face)
+  "Return the pixel height of FACE's body text, Latin and CJK.
+The probe covers the same scripts the default face's line box uses.  A face
+that makes text larger therefore keeps its Chinese as tall as its Latin
+instead of reading the CJK font as an overflowing fallback glyph."
+  (let ((hash (cdr (ebox--face-table face))))
+    (or (gethash 'body-height hash)
+        (puthash 'body-height
+                 (cdr (ebox--measure-raw-size
+                       (if face
+                           (propertize ebox--line-probes 'face face)
+                         ebox--line-probes)))
                  hash))))
 
 (defun ebox--face-line-height (face)
@@ -530,7 +595,7 @@ mounted canvas owns them and the work buffer leaves them out."
         (puthash 'line-height
                  (max (plist-get (or ebox--active-metrics
                                     (ebox--display-metrics ebox--measure-buffer)) :line-height)
-                      (ebox--face-text-height face))
+                      (ebox--face-body-height face))
                  hash))))
 
 (defvar ebox--row-strut-cache nil
@@ -561,8 +626,9 @@ cannot drop it.  Return nil when ordinary text already reaches the line."
   "Return the height of a row holding CLUSTER at SCALE beside text under FACE."
   (let ((glyph (propertize cluster 'face face)))
     (when scale
-      (put-text-property 0 (length glyph) 'display (list 'height scale) glyph))
-    (cdr (ebox--measure-raw-size (concat (propertize "0" 'face face) glyph)))))
+      (put-text-property 0 (length glyph) 'display (ebox--fit-spec face scale) glyph))
+    (cdr (ebox--measure-raw-size
+          (concat (propertize ebox--line-probes 'face face) glyph)))))
 
 (defconst ebox--emoji-source
   (expand-file-name "../native/emoji/emoji-render.swift"
@@ -670,8 +736,9 @@ display specification."
                                (<= (ebox--fit-row-height cluster face scale) line))
                       return (cons (car (ebox--measure-raw-size
                                          (propertize cluster 'face face
-                                                     'display (list 'height scale))))
-                                   (list 'height scale)))))))
+                                                     'display
+                                                     (ebox--fit-spec face scale))))
+                                   (ebox--fit-spec face scale)))))))
           (puthash cluster (or fit 'fits) fits)
           fit)))))
 

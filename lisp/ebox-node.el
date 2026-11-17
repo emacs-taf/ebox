@@ -815,7 +815,9 @@ unless `ebox-viewport-height' supplies one."
         (puthash face face ebox--face-intern))))
 
 (defun ebox--font-group (vals parent)
-  "Return (FACE-PLIST . CSS-WEIGHT) for font VALS under PARENT style."
+  "Return (FACE-PLIST . CSS-WEIGHT) for font VALS under PARENT style.
+`ebox/font-size' is a ratio of the body size, so `ebox--font-height' turns
+it into the 1/10 pt height Emacs paints with."
   (let* ((family (plist-get vals 'ebox/font-family))
          (size (plist-get vals 'ebox/font-size))
          (weight (plist-get vals 'ebox/font-weight))
@@ -825,7 +827,7 @@ unless `ebox-viewport-height' supplies one."
          face)
     (when family
       (setq face (plist-put face :family (if (symbolp family) (symbol-name family) family))))
-    (when size (setq face (plist-put face :height (floor (+ (* size 7.5) 0.5)))))
+    (when size (setq face (plist-put face :height (ebox--font-height size))))
     (unless (memq weight '(nil normal))
       (setq face (plist-put face :weight (ebox--emacs-weight css))))
     (unless (memq slant '(nil normal))
@@ -929,7 +931,7 @@ A terminal has one face size, so a larger size cannot render.  The node that
 raises the size takes bold weight instead, and children inherit it through
 the normal font-weight cascade.  Graphical frames return VALS unchanged."
   (let ((size (plist-get vals 'ebox/font-size))
-        (base (and parent (or (ebox--cv parent 'ebox/font-size) 16)))
+        (base (and parent (or (ebox--cv parent 'ebox/font-size) 1)))
         (weight (plist-get vals 'ebox/font-weight)))
     (if (and (ebox--text-display-p)
              (numberp size) (numberp base) (> size (* base 1.15))
