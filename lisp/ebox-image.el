@@ -225,8 +225,15 @@ INSET is (TOP . BOTTOM) pixels left empty above and below the image."
                                       ;; the picture at twice its size, so each
                                       ;; slice showed half a row of it and every
                                       ;; label appeared twice.
+                                      ;; Image pixels are page pixels here: a
+                                      ;; frame that scales images by its own
+                                      ;; factor would answer a larger size than
+                                      ;; asked for, and both the size check
+                                      ;; below and the slice grid are written
+                                      ;; in page pixels.
                                       (apply #'create-image data type t :width width
                                              :height height :ascent ascent
+                                             :scale 1
                                              :margin 0
                                              (and ebox-image--background
                                                   (list :background
