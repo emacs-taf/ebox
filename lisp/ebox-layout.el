@@ -1999,11 +1999,19 @@ The strings span the content width CW in pixels."
     (pcase (ebox-geo-kind geo)
       ;; A stretched image box paints its background beyond the image.
       ('image (if (< ci (ebox-geo-n geo))
-                  (let ((fill (- cw (ebox--image-width node))))
-                    (cons (ebox--image-on-background (aref items ci) node)
-                          (if (and padface (> fill 0))
-                              (cons (ebox--space fill padface) tail)
-                            tail)))
+                  (let* ((width (ebox--image-width node))
+                         (line (ebox--image-on-background (aref items ci) node))
+                         (fill (- cw width)))
+                    (cond
+                     ;; The content box is narrower than the picture: a
+                     ;; stretched image node still paints at its own width,
+                     ;; and the surplus would overrun the box into whatever
+                     ;; shares the line.  Cut the slice to the content box.
+                     ((< fill 0)
+                      (cons (car (ebox--split-parts (list line) cw)) tail))
+                     ((and padface (> fill 0))
+                      (cons line (cons (ebox--space fill padface) tail)))
+                     (t (cons line tail))))
                 (cons (ebox--space cw padface) tail)))
       ('stack
        (let ((item (ebox--find-item geo ci)))

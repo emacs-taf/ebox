@@ -32,6 +32,27 @@ def"))
                  "你好
 吗 ")))
 
+(ert-deftest ebox-render-cuts-a-picture-to-its-content-box ()
+  "A picture wider than its content box is cut to the box.
+A box gives a stretched image node its content width while the node keeps
+painting the picture at its own pixel width.  Without the cut the surplus
+paints over whatever shares the line and pushes it aside: a shelf of covers
+shoved the panel beside it 10 pixels to the right, so the panel's cover came
+out with a seam across it."
+  (let* ((prepared (ebox-image-prepare "/tmp/ebox-test-source.png" 12 2
+                                       :adapter 'placeholder))
+         (picture (ebox-node-create 'image (list :image prepared)))
+         (root (ebox-node-create 'box (list :width '(px 6) :height '(lh 2))
+                                 (list picture)))
+         (line (car (split-string (ebox-render root) "\n")))
+         (display (get-text-property 0 'display line))
+         (slice (and (consp display) (eq (car-safe (car display)) 'slice)
+                     (car display)))
+         ;; A text adapter paints one character per cell and a graphical one
+         ;; paints one sliced picture per row; both must stop at the box.
+         (painted (if slice (nth 3 slice) (length line))))
+    (should (<= painted 6))))
+
 (ert-deftest ebox-render-keeps-punctuation-off-line-edges ()
   (should (equal (ebox-test-render-text '(box :width (ch 4) "你好。好"))
                  "你 

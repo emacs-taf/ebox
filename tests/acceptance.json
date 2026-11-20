@@ -585,6 +585,11 @@
       "purpose": "Invalid author forms and sizes signal public Ebox errors before rendering."
     },
     {
+      "name": "ebox-render-cuts-a-picture-to-its-content-box",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "An image node stretched narrower than its prepared picture cuts the painted slices to the content box, so the surplus no longer overruns the box and shifts whatever shares the line."
+    },
+    {
       "name": "ebox-node-set-scroll-clamps-and-repaints-visible-lines",
       "file": "tests/ebox-scroll-input-tests.el",
       "purpose": "Programmatic scroll clamps the offset and repaints the visible lines."
